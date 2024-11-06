@@ -1,0 +1,8 @@
+[package]
+name = "pyaotc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustpython-parser = "0.4.0"
+inkwell = { version = "0.5.0", features = ["llvm14-0"] }
