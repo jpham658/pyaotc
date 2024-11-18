@@ -11,8 +11,7 @@ fn main() {
     // x = 2
     // "#;
     let python_source = r#"
-x = 3
-x = x + 3.0
+len(x)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
@@ -20,7 +19,8 @@ x = x + 3.0
     match ast::Suite::parse(&python_source, "<embedded>") {
         Ok(ast) => {
             astutils::print_ast(&ast);
-            compiler.compile(ast);
+            println!("{:?}", type_rules::build_variable_rules(&ast));
+            // compiler.compile(ast);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);

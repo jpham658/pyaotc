@@ -212,7 +212,12 @@ impl LLVMCodeGen for ExprConstant {
                     _ => false,
                 };
                 Ok(i64_type.const_int(int_val, is_minus).as_any_value_enum())
-            }
+            },
+            Constant::Bool(bool) => {
+                let i8_type = compiler.context.i8_type();
+                let bool_val = u64::from(*bool);
+                Ok(i8_type.const_int(bool_val, false).as_any_value_enum())
+            },
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
@@ -243,7 +248,6 @@ impl LLVMCodeGen for ExprBinOp {
         let right = self.right.codegen(compiler)?;
         let res = match op {
             Operator::Add => {
-                println!("{}", left.get_type());
                 if left.is_int_value() && right.is_int_value() {
                     compiler
                         .builder
