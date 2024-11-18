@@ -10,16 +10,19 @@ fn main() {
     // x = 3
     // x + 4.0
     // "#;
+//     let python_source = r#"
+// x = 3
+// x = 2
+// "#;
     let python_source = r#"
-x = 3
-x = 2
+x = 3 / 1
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
 
     match ast::Suite::parse(&python_source, "<embedded>") {
         Ok(ast) => {
-            astutils::print_ast(&ast);
+            // astutils::print_ast(&ast);
             compiler.compile(ast);
         },
         Err(e) => {

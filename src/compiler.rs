@@ -1,9 +1,11 @@
+use inkwell::types::AnyTypeEnum;
 use inkwell::values::{AnyValue, AnyValueEnum, FloatValue};
 use inkwell::{builder::Builder, context::Context, module::Module};
 use malachite_bigint;
 use rustpython_parser::ast::located::ExprContext;
 use rustpython_parser::ast::{
-    Constant, Expr, ExprBinOp, ExprConstant, ExprName, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef
+    Constant, Expr, ExprBinOp, ExprConstant, ExprName, Operator, Stmt, StmtAssign, StmtExpr,
+    StmtFunctionDef,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,7 +36,6 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     pub fn compile(&self, ast: Vec<Stmt>) {
-        let i64_type = self.context.i64_type();
         let f64_type = self.context.f64_type();
         let main = self
             .module
@@ -42,13 +43,9 @@ impl<'ctx> Compiler<'ctx> {
         let main_entry = self.context.append_basic_block(main, "entry");
         self.builder.position_at_end(main_entry);
 
-        let mut last_val = None;
-
         for statement in ast {
             match statement.codegen(&self) {
-                Ok(ir) => {
-                    last_val = Some(ir); // Store last evaluated IR value
-                }
+                Ok(ir) => {}
                 Err(e) => {
                     println!("{:?}", e);
                     return;
@@ -56,18 +53,7 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
-        if let Some(final_val) = last_val {
-            // Return the final evaluated value, assuming it’s a float to cast to i64
-            match final_val {
-                AnyValueEnum::FloatValue(float_val) => {
-                    let _ = self.builder.build_return(Some(&float_val));
-                }
-                AnyValueEnum::IntValue(int_val) => {
-                    let _ = self.builder.build_return(Some(&int_val));
-                }
-                _ => {}
-            }
-        }
+        let _ = self.builder.build_return(Some(&f64_type.const_float(0.0)));
 
         self.dump_module();
 
@@ -102,14 +88,13 @@ impl LLVMCodeGen for Stmt {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self {
             Stmt::Expr(StmtExpr { value, .. }) => value.codegen(compiler),
-            Stmt::Assign( stmt_assign ) => stmt_assign.codegen(compiler),
+            Stmt::Assign(stmt_assign) => stmt_assign.codegen(compiler),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
         }
     }
 }
-
 
 impl LLVMCodeGen for StmtFunctionDef {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
@@ -123,34 +108,69 @@ impl LLVMCodeGen for StmtAssign {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         // Only supports single assignment e.g x = 3
         // Cannot do x, y = 3, 5 yet!
-        // Also only supports storing constants for now... 
+        // Also only supports storing constants for now...
         // but this gets fixed when I do my typing..
-        let i64_type = compiler.context.i64_type();
         match &self.targets[0] {
             Expr::Name(exprname) => {
                 let target_name = exprname.id.as_str();
-                let value = &self.value.codegen(compiler)
-                                                                     .expect("Failed to compute right side of assignment.");
-                if !value.is_int_value() {
-                    return Err(BackendError{ message: "Can only store integer variables." });
-                }
+                let value = &self
+                    .value
+                    .codegen(compiler)
+                    .expect("Failed to compute right side of assignment.");
 
                 let mut sym_table = compiler.sym_table.borrow_mut();
-                println!("{:?}", sym_table);
                 let target_ptr;
                 if !sym_table.contains_key(target_name) {
-                    target_ptr = compiler.builder.build_alloca(i64_type, target_name).expect("Could not allocate variable {target_name}");
+                    match value.get_type() {
+                        AnyTypeEnum::FloatType(..) => {
+                            target_ptr = compiler
+                                .builder
+                                .build_alloca(compiler.context.f64_type(), target_name)
+                                .expect("Cannot allocate variable {target_name}");
+                        }
+                        AnyTypeEnum::IntType(..) => {
+                            target_ptr = compiler
+                                .builder
+                                .build_alloca(compiler.context.i64_type(), target_name)
+                                .expect("Cannot allocate variable {target_name}");
+                        }
+                        _ => {
+                            return Err(BackendError {
+                                message: "Assignments not implemented for {value.get_type()}",
+                            })
+                        }
+                    }
                 } else {
                     // should only be pointers in the symbol table
                     target_ptr = sym_table.get(target_name).unwrap().into_pointer_value();
                 }
-                let store = compiler.builder.build_store(target_ptr, value.into_int_value()).expect("Could not store variable {target_name}.");
+                let store;
+
+                match value.get_type() {
+                    AnyTypeEnum::IntType(..) => {
+                        store = compiler
+                            .builder
+                            .build_store(target_ptr, value.into_int_value())
+                            .expect("Could not store variable {target_name}.");
+                    }
+                    AnyTypeEnum::FloatType(..) => {
+                        store = compiler
+                            .builder
+                            .build_store(target_ptr, value.into_float_value())
+                            .expect("Could not store variable {target_name}.");
+                    }
+                    _ => {
+                        return Err(BackendError {
+                            message: "Assignments not implemented for {value.get_type()}",
+                        })
+                    }
+                }
                 sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
                 return Ok(store.as_any_value_enum());
-            },
+            }
             _ => Err(BackendError {
                 message: "Left of an assignment must be a variable.",
-            }) 
+            }),
         }
     }
 }
@@ -159,23 +179,23 @@ impl LLVMCodeGen for ExprName {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
-                if let Some(llvm_val) = compiler.sym_table
-                                                                     .borrow()
-                                                                     .get(self.id.as_str()) {
-                    return Ok(*llvm_val)
+                if let Some(llvm_val) = compiler.sym_table.borrow().get(self.id.as_str()) {
+                    return Ok(*llvm_val);
                 } else {
-                    return Err(BackendError{ message: "Variable {self.id.as_str()} doesn't exist in this scope." })
+                    return Err(BackendError {
+                        message: "Variable {self.id.as_str()} doesn't exist in this scope.",
+                    });
                 }
-            },
-            ExprContext::Del => Err(BackendError{ message: "Deleting a variable is not implemented yet." })
+            }
+            ExprContext::Del => Err(BackendError {
+                message: "Deleting a variable is not implemented yet.",
+            }),
         }
     }
 }
 
 impl LLVMCodeGen for ExprConstant {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        println!("Current Block: {:?}", compiler.builder.get_insert_block());
-
         match &self.value {
             Constant::Float(num) => {
                 let f64_type = compiler.context.f64_type();
@@ -216,8 +236,6 @@ impl LLVMCodeGen for ExprBinOp {
         // TODO: implement for nested binops
         // Only deals with 1-level arithmetic expressions
         // e.g 3 + 4, 5 + 1.0
-        println!("Current Block: {:?}", compiler.builder.get_insert_block());
-
         let op = self.op;
         let left = self.left.codegen(compiler)?;
         let right = self.right.codegen(compiler)?;
@@ -322,7 +340,6 @@ impl LLVMCodeGen for ExprBinOp {
                 })
             }
         };
-        println!("Generated IR: {:?}", res);
         Ok(res)
     }
 }
@@ -338,7 +355,6 @@ fn get_left_and_right_as_floats<'ctx>(
     let f64_type = compiler.context.f64_type();
     match (left, right) {
         (AnyValueEnum::IntValue(left_int), _) => {
-            println!("Left is int: {}", left_int);
             lhs = Some(left_int.const_signed_to_float(f64_type));
             rhs = Some(right.into_float_value());
         }
