@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Formatter, Result};
+
 enum ConstantType {
     None,
     Bool,
@@ -16,7 +18,7 @@ pub struct Heuristic {
 }
 
 impl Debug for Heuristic {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         f.debug_struct("Heuristic")
             .field("typename", &self.typename)
             .field("score", &self.score)
@@ -25,7 +27,7 @@ impl Debug for Heuristic {
 }
 
 impl Debug for ConstantType {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> Result {
         match self {
             ConstantType::None => write!(f, "None"),
             ConstantType::Bool => write!(f, "Bool"),

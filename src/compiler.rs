@@ -1,13 +1,12 @@
 use inkwell::values::{AnyValue, AnyValueEnum, FloatValue};
 use inkwell::{builder::Builder, context::Context, module::Module};
 use malachite_bigint;
+use rustpython_parser::ast::located::ExprContext;
 use rustpython_parser::ast::{
-    Constant, Expr, ExprBinOp, ExprConstant, Operator, Stmt, StmtExpr, StmtFunctionDef,
+    Constant, Expr, ExprBinOp, ExprConstant, ExprName, Operator, Stmt, StmtExpr, StmtFunctionDef,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fmt;
-use std::fmt::{Debug, Formatter};
 use std::path::Path;
 use std::process::Command;
 
@@ -79,8 +78,6 @@ impl<'ctx> Compiler<'ctx> {
             Ok(..) => println!(".ll file found at {}", output.display()),
             Err(e) => println!("Could not generate .ll file: {}", e),
         }
-
-        let mut executable_command = Command::new("sh");
     }
 
     pub fn dump_module(&self) {
@@ -106,6 +103,19 @@ impl LLVMCodeGen for StmtFunctionDef {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
+        })
+    }
+}
+
+impl LLVMCodeGen for ExprName {
+    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        match self.ctx {
+            ExprContext::Load => println!("We are loading in variable {}", self.id),
+            ExprContext::Store => println!("We are storing in variable {}", self.id),
+            ExprContext::Del => println!("We are deleting variable {}", self.id)
+        }
+        Err(BackendError {
+            message: &"Not implemented yet...",
         })
     }
 }

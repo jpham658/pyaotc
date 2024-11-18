@@ -3,6 +3,7 @@ use inkwell::context::Context;
 use rustpython_parser::{ast, Parse};
 mod astutils;
 mod compiler;
+mod type_rules;
 
 fn main() {
     //     let python_source = r#"
