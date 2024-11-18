@@ -177,8 +177,11 @@ impl LLVMCodeGen for ExprName {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
-                if let Some(llvm_val) = compiler.sym_table.borrow().get(self.id.as_str()) {
-                    return Ok(*llvm_val);
+                if let Some(name_ptr) = compiler.sym_table.borrow().get(self.id.as_str()) {
+                    let load = compiler.builder
+                                                             .build_load(name_ptr.into_pointer_value(), &"load")
+                                                             .expect("Could not build load instruction.");
+                    return Ok(load.as_any_value_enum());
                 } else {
                     return Err(BackendError {
                         message: "Variable {self.id.as_str()} doesn't exist in this scope.",
@@ -222,6 +225,7 @@ impl LLVMCodeGen for Expr {
         match self {
             Expr::BinOp(binop) => binop.codegen(compiler),
             Expr::Constant(constant) => constant.codegen(compiler),
+            Expr::Name(name) => name.codegen(compiler),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
@@ -239,6 +243,7 @@ impl LLVMCodeGen for ExprBinOp {
         let right = self.right.codegen(compiler)?;
         let res = match op {
             Operator::Add => {
+                println!("{}", left.get_type());
                 if left.is_int_value() && right.is_int_value() {
                     compiler
                         .builder

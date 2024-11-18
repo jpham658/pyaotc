@@ -11,7 +11,8 @@ fn main() {
     // x = 2
     // "#;
     let python_source = r#"
-x = 3 / 1
+x = 3
+x = x + 3.0
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
