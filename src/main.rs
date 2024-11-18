@@ -8,12 +8,8 @@ mod type_rules;
 fn main() {
     //     let python_source = r#"
     // x = 3
-    // x + 4.0
+    // x = 2
     // "#;
-//     let python_source = r#"
-// x = 3
-// x = 2
-// "#;
     let python_source = r#"
 x = 3 / 1
 "#;
@@ -22,9 +18,9 @@ x = 3 / 1
 
     match ast::Suite::parse(&python_source, "<embedded>") {
         Ok(ast) => {
-            // astutils::print_ast(&ast);
+            astutils::print_ast(&ast);
             compiler.compile(ast);
-        },
+        }
         Err(e) => {
             eprintln!("ParseError: {}", e);
         }
