@@ -11,8 +11,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
-// TODO: I need to figure out how to just output the ir for a simple arithmetic
-// expression
 
 #[derive(Debug)]
 pub struct Compiler<'ctx> {
