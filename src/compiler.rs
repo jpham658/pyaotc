@@ -3,12 +3,11 @@ use inkwell::{builder::Builder, context::Context, module::Module};
 use malachite_bigint;
 use rustpython_parser::ast::located::ExprContext;
 use rustpython_parser::ast::{
-    Constant, Expr, ExprBinOp, ExprConstant, ExprName, Operator, Stmt, StmtExpr, StmtFunctionDef,
+    Constant, Expr, ExprBinOp, ExprConstant, ExprName, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
 
 // TODO: I need to figure out how to just output the ir for a simple arithmetic
 // expression
@@ -99,6 +98,19 @@ pub trait LLVMCodeGen {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
 }
 
+impl LLVMCodeGen for Stmt {
+    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        match self {
+            Stmt::Expr(StmtExpr { value, .. }) => value.codegen(compiler),
+            Stmt::Assign( stmt_assign ) => stmt_assign.codegen(compiler),
+            _ => Err(BackendError {
+                message: "Not implemented yet...",
+            }),
+        }
+    }
+}
+
+
 impl LLVMCodeGen for StmtFunctionDef {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         Err(BackendError {
@@ -107,16 +119,51 @@ impl LLVMCodeGen for StmtFunctionDef {
     }
 }
 
+impl LLVMCodeGen for StmtAssign {
+    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        // Only supports single assignment e.g x = 3
+        // Cannot do x, y = 3, 5 yet!
+        // Also only supports storing constants for now... 
+        // but this gets fixed when I do my typing..
+        let i64_type = compiler.context.i64_type();
+        match &self.targets[0] {
+            Expr::Name(exprname) => {
+                let target_name = exprname.id.as_str();
+                let value = &self.value.codegen(compiler)
+                                                                     .expect("Failed to compute right side of assignment.");
+                if !value.is_int_value() {
+                    return Err(BackendError{ message: "Can only store integer variables." });
+                }
+
+                let mut sym_table = compiler.sym_table.borrow_mut();
+                sym_table.entry(target_name.to_string())
+                         .and_modify(|v| *v = *value)
+                         .or_insert(*value);
+                let target_ptr = compiler.builder.build_alloca(i64_type, target_name).expect("Could not allocate variable {target_name}");
+                let store = compiler.builder.build_store(target_ptr, value.into_int_value()).expect("Could not store variable {target_name}.");
+                Ok(store.as_any_value_enum())
+            },
+            _ => Err(BackendError {
+                message: "Left of an assignment must be a variable.",
+            }) 
+        }
+    }
+}
+
 impl LLVMCodeGen for ExprName {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self.ctx {
-            ExprContext::Load => println!("We are loading in variable {}", self.id),
-            ExprContext::Store => println!("We are storing in variable {}", self.id),
-            ExprContext::Del => println!("We are deleting variable {}", self.id)
+            ExprContext::Load | ExprContext::Store => {
+                if let Some(llvm_val) = compiler.sym_table
+                                                                     .borrow()
+                                                                     .get(self.id.as_str()) {
+                    return Ok(*llvm_val)
+                } else {
+                    return Err(BackendError{ message: "Variable {self.id.as_str()} doesn't exist in this scope." })
+                }
+            },
+            ExprContext::Del => Err(BackendError{ message: "Deleting a variable is not implemented yet." })
         }
-        Err(BackendError {
-            message: &"Not implemented yet...",
-        })
     }
 }
 
@@ -152,17 +199,6 @@ impl LLVMCodeGen for Expr {
         match self {
             Expr::BinOp(binop) => binop.codegen(compiler),
             Expr::Constant(constant) => constant.codegen(compiler),
-            _ => Err(BackendError {
-                message: "Not implemented yet...",
-            }),
-        }
-    }
-}
-
-impl LLVMCodeGen for Stmt {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        match self {
-            Stmt::Expr(StmtExpr { value, .. }) => value.codegen(compiler),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),

@@ -11,7 +11,7 @@ fn main() {
     // x + 4.0
     // "#;
     let python_source = r#"
-x = x
+x = 3
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
@@ -19,7 +19,7 @@ x = x
     match ast::Suite::parse(&python_source, "<embedded>") {
         Ok(ast) => {
             astutils::print_ast(&ast);
-            // compiler.compile(ast);
+            compiler.compile(ast);
         },
         Err(e) => {
             eprintln!("ParseError: {}", e);
