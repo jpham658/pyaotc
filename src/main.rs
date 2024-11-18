@@ -12,6 +12,7 @@ fn main() {
     // "#;
     let python_source = r#"
 x = 3
+x = 2
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);

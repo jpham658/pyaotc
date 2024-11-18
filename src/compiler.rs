@@ -136,12 +136,17 @@ impl LLVMCodeGen for StmtAssign {
                 }
 
                 let mut sym_table = compiler.sym_table.borrow_mut();
-                sym_table.entry(target_name.to_string())
-                         .and_modify(|v| *v = *value)
-                         .or_insert(*value);
-                let target_ptr = compiler.builder.build_alloca(i64_type, target_name).expect("Could not allocate variable {target_name}");
+                println!("{:?}", sym_table);
+                let target_ptr;
+                if !sym_table.contains_key(target_name) {
+                    target_ptr = compiler.builder.build_alloca(i64_type, target_name).expect("Could not allocate variable {target_name}");
+                } else {
+                    // should only be pointers in the symbol table
+                    target_ptr = sym_table.get(target_name).unwrap().into_pointer_value();
+                }
                 let store = compiler.builder.build_store(target_ptr, value.into_int_value()).expect("Could not store variable {target_name}.");
-                Ok(store.as_any_value_enum())
+                sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
+                return Ok(store.as_any_value_enum());
             },
             _ => Err(BackendError {
                 message: "Left of an assignment must be a variable.",
