@@ -1,5 +1,5 @@
 use compiler::Compiler;
-use inkwell::context::Context;
+use inkwell::{context::Context, values::AnyValue};
 use rustpython_parser::{ast, Parse};
 mod astutils;
 mod compiler;
@@ -11,7 +11,9 @@ fn main() {
     // x = 2
     // "#;
     let python_source = r#"
-len(x)
+def foo():
+    print('Hello world')
+foo()
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
@@ -19,8 +21,7 @@ len(x)
     match ast::Suite::parse(&python_source, "<embedded>") {
         Ok(ast) => {
             astutils::print_ast(&ast);
-            println!("{:?}", type_rules::build_variable_rules(&ast));
-            // compiler.compile(ast);
+            compiler.compile(ast);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);
