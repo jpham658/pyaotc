@@ -5,8 +5,8 @@ use inkwell::AddressSpace;
 use inkwell::{builder::Builder, context::Context, module::Module};
 use malachite_bigint;
 use rustpython_parser::ast::{
-    Constant, Expr, ExprBinOp, ExprCall, ExprConstant, ExprContext, ExprName, Operator, Stmt,
-    StmtAssign, StmtExpr, StmtFunctionDef,
+    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
+    ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -77,7 +77,9 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn setup_compiler(&self) {
-        let printf_param_types = BasicMetadataTypeEnum::PointerType(self.context.i8_type().ptr_type(AddressSpace::default()));
+        let printf_param_types = BasicMetadataTypeEnum::PointerType(
+            self.context.i8_type().ptr_type(AddressSpace::default()),
+        );
         let printf_type = self.context.i32_type().fn_type(&[printf_param_types], true);
         let printf_func = self.module.add_function("printf", printf_type, None);
     }
@@ -225,7 +227,6 @@ impl LLVMCodeGen for StmtAssign {
     }
 }
 
-
 impl LLVMCodeGen for Expr {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self {
@@ -233,6 +234,10 @@ impl LLVMCodeGen for Expr {
             Expr::Constant(constant) => constant.codegen(compiler),
             Expr::Name(name) => name.codegen(compiler),
             Expr::Call(call) => call.codegen(compiler),
+            Expr::BoolOp(boolop) => boolop.codegen(compiler),
+            Expr::UnaryOp(unop) => unop.codegen(compiler),
+            Expr::IfExp(ifexp) => ifexp.codegen(compiler),
+            Expr::List(list) => list.codegen(compiler),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
@@ -240,37 +245,112 @@ impl LLVMCodeGen for Expr {
     }
 }
 
+impl LLVMCodeGen for ExprList {
+    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        Err(BackendError {
+            message: "Not implemented yet...",
+        })
+    }
+}
+
+impl LLVMCodeGen for ExprIfExp {
+    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        Err(BackendError {
+            message: "Not implemented yet...",
+        })
+    }
+}
+
+impl LLVMCodeGen for ExprUnaryOp {
+    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        Err(BackendError {
+            message: "Not implemented yet...",
+        })
+    }
+}
+
+impl LLVMCodeGen for ExprBoolOp {
+    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        let values = self
+            .values
+            .clone()
+            .into_iter()
+            .map(|val| val.codegen(compiler).unwrap())
+            .collect::<Vec<_>>();
+
+        let true_val = compiler.context.i8_type().const_int(1, false);
+        let false_val = compiler.context.i8_type().const_zero();
+        let res;
+
+        if self.op.is_and() {
+            for val in values {
+                println!("Value {:?} evaluates to false? {:?}", val, val == false_val);
+                if val == false_val {
+                    return Ok(false_val.as_any_value_enum());
+                }
+            }
+            res = true_val;
+        } else {
+            // op is "or"
+            for val in values {
+                if val == true_val {
+                    return Ok(true_val.as_any_value_enum());
+                }
+            }
+            res = false_val;
+        }
+
+        Ok(res.as_any_value_enum())
+    }
+}
+
 impl LLVMCodeGen for ExprCall {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        let func_name = self.func.as_name_expr().expect("You can only call functions...?").id.as_str();
+        let func_name = self
+            .func
+            .as_name_expr()
+            .expect("You can only call functions...?")
+            .id
+            .as_str();
         let function;
         if func_name.eq("print") {
-            function = compiler.module.get_function("printf").expect("Could not find print function.");
+            function = compiler
+                .module
+                .get_function("printf")
+                .expect("Could not find print function.");
         } else {
-            function = compiler.module.get_function(func_name).expect("Could not find function.");
+            function = compiler
+                .module
+                .get_function(func_name)
+                .expect("Could not find function.");
         }
 
         // validate function args
 
         // codegen args if we have any
-        let args = self.args.iter()
-        .map(|arg| arg.codegen(compiler))
-        .collect::<Result<Vec<_>, BackendError>>()?;
+        let args = self
+            .args
+            .iter()
+            .map(|arg| arg.codegen(compiler))
+            .collect::<Result<Vec<_>, BackendError>>()?;
 
         println!("{:?}", args);
 
         let args: Vec<BasicMetadataValueEnum> = args
-        .into_iter()
-        .map(|val| {
-            match val {
-                AnyValueEnum::IntValue(..) => BasicMetadataValueEnum::IntValue(val.into_int_value()),
-                _ => BasicMetadataValueEnum::PointerValue(val.into_pointer_value())
-            }
-        })
-        .collect();
+            .into_iter()
+            .map(|val| match val {
+                AnyValueEnum::IntValue(..) => {
+                    BasicMetadataValueEnum::IntValue(val.into_int_value())
+                }
+                _ => BasicMetadataValueEnum::PointerValue(val.into_pointer_value()),
+            })
+            .collect();
 
-        let call = compiler.builder.build_call(function, &args, "tmpcall").expect("Could not call function.");
-        
+        let call = compiler
+            .builder
+            .build_call(function, &args, "tmpcall")
+            .expect("Could not call function.");
+
         Ok(call.as_any_value_enum())
     }
 }
@@ -279,7 +359,8 @@ impl LLVMCodeGen for ExprName {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
-                if let Some(name_ptr) = compiler.sym_table.borrow().get(self.id.as_str()) {
+                let sym_table = compiler.sym_table.borrow();
+                if let Some(name_ptr) = sym_table.get(self.id.as_str()) {
                     let load = compiler
                         .builder
                         .build_load(name_ptr.into_pointer_value(), &"load")
@@ -309,12 +390,16 @@ impl LLVMCodeGen for ExprConstant {
                 let i64_type = compiler.context.i64_type();
                 let (sign, digits) = num.to_u64_digits();
                 // For now, let's just support numbers up to i64
-                let int_val = digits[0] as u64;
-                let is_minus = match sign {
-                    malachite_bigint::Sign::Minus => true,
-                    _ => false,
-                };
-                Ok(i64_type.const_int(int_val, is_minus).as_any_value_enum())
+                if digits.len() > 0 {
+                    let int_val = digits[0] as u64;
+                    let is_minus = match sign {
+                        malachite_bigint::Sign::Minus => true,
+                        _ => false,
+                    };
+                    Ok(i64_type.const_int(int_val, is_minus).as_any_value_enum())
+                } else {
+                    Ok(i64_type.const_zero().as_any_value_enum())
+                }
             }
             Constant::Bool(bool) => {
                 let i8_type = compiler.context.i8_type();
@@ -343,6 +428,8 @@ impl LLVMCodeGen for ExprBinOp {
         let op = self.op;
         let left = self.left.codegen(compiler)?;
         let right = self.right.codegen(compiler)?;
+        println!("Left {:?}", left);
+        println!("Right {:?}", right);
         let res = match op {
             Operator::Add => {
                 if left.is_int_value() && right.is_int_value() {
