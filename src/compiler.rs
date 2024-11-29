@@ -1,12 +1,15 @@
-use inkwell::module::Linkage;
-use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType};
-use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue};
+use inkwell::llvm_sys::LLVMType;
+use inkwell::types::{AnyType, AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicType};
+use inkwell::values::{
+    AnyValue, AnyValueEnum, ArrayValue, BasicMetadataValueEnum, FloatValue, IntValue, MetadataValue,
+};
 use inkwell::AddressSpace;
 use inkwell::{builder::Builder, context::Context, module::Module};
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
     ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
+    StmtReturn,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -82,6 +85,9 @@ impl<'ctx> Compiler<'ctx> {
         );
         let printf_type = self.context.i32_type().fn_type(&[printf_param_types], true);
         let printf_func = self.module.add_function("printf", printf_type, None);
+
+        // define an Any type struct that can be used in generic cases
+        let any_type = self.context.struct_type(&[], false);
     }
 }
 
@@ -109,30 +115,149 @@ impl LLVMCodeGen for Stmt {
     }
 }
 
+/**
+ * The gist of this function is to generate a typed version of a given function
+ * and a general version of a function
+ */
 impl LLVMCodeGen for StmtFunctionDef {
     fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        // let's just get a specific function defined and run first
-        let void_type = compiler.context.void_type();
         // save main entry point
         let main_entry = compiler
             .builder
             .get_insert_block()
             .expect("Builder isn't mapped to a basic block?");
 
-        let func_prototype =
-            compiler
-                .module
-                .add_function(self.name.as_str(), void_type.fn_type(&[], false), None);
+        // get list of arg types
+        // assumes completely typed AST
+        let mut arg_types: Vec<BasicMetadataTypeEnum> = Vec::new();
+        for arg in &*self.args.args {
+            let arg_def = &arg.def;
+            match &arg_def.annotation {
+                Some(ann) => {
+                    let ann_clone = ann.clone();
+                    let type_exp = ann_clone
+                        .as_constant_expr()
+                        .expect("Type annotation should be constants.")
+                        .value
+                        .as_str()
+                        .expect("Type annotations should be strings.");
+
+                    match type_exp.as_str() {
+                        "int" => {
+                            let i64_type = compiler.context.i64_type();
+                            arg_types.push(i64_type.into());
+                        }
+                        "float" => {
+                            let f64_type = compiler.context.f64_type();
+                            arg_types.push(f64_type.into());
+                        }
+                        _ => {
+                            return Err(BackendError {
+                                message: "Unexpected argument type found.",
+                            });
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+
+        let func_prototype;
+
+        // get function return type
+        match &self.returns {
+            Some(return_stmt) => {
+                let return_stmt_clone = return_stmt.clone();
+                let type_exp = return_stmt_clone
+                    .as_constant_expr()
+                    .expect("Type annotation should be constants.")
+                    .value
+                    .as_str()
+                    .expect("Type annotations should be strings.");
+                match type_exp.as_str() {
+                    "int" => {
+                        let i64_type = compiler.context.i64_type();
+                        func_prototype = compiler.module.add_function(
+                            self.name.as_str(),
+                            i64_type.fn_type(&arg_types, false),
+                            None,
+                        );
+                    }
+                    "float" => {
+                        let f64_type = compiler.context.f64_type();
+                        func_prototype = compiler.module.add_function(
+                            self.name.as_str(),
+                            f64_type.fn_type(&arg_types, false),
+                            None,
+                        );
+                    }
+                    _ => {
+                        return Err(BackendError {
+                            message: "Unexpected return type found.",
+                        });
+                    }
+                }
+            }
+            None => {
+                let void_type = compiler.context.void_type();
+                func_prototype = compiler.module.add_function(
+                    self.name.as_str(),
+                    void_type.fn_type(&arg_types, false),
+                    None,
+                );
+            }
+        }
+
         let func_entry = compiler.context.append_basic_block(func_prototype, "entry");
 
         compiler.builder.position_at_end(func_entry);
 
+        let mut return_stmts: Vec<AnyValueEnum> = Vec::new();
+
         // build function body
         for statement in &self.body {
-            let _ = statement.codegen(compiler);
+            let res = statement.codegen(compiler);
+            match res {
+                Err(e) => return Err(e),
+                Ok(ir) => match statement {
+                    Stmt::Return(..) => {
+                        return_stmts.push(ir);
+                    }
+                    _ => {}
+                },
+            }
         }
 
-        let _ = compiler.builder.build_return(None);
+        // build return
+        // for now, support only one return statement @ end of function block
+        let return_val = return_stmts.get(0);
+        match return_val {
+            Some(return_stmt) => match return_stmt {
+                AnyValueEnum::FloatValue(..) => {
+                    compiler
+                        .builder
+                        .build_return(Some(&return_stmt.into_float_value()));
+                }
+                AnyValueEnum::IntValue(..) => {
+                    compiler
+                        .builder
+                        .build_return(Some(&return_stmt.into_int_value()));
+                }
+                AnyValueEnum::PointerValue(..) => {
+                    compiler
+                        .builder
+                        .build_return(Some(&return_stmt.into_pointer_value()));
+                }
+                _ => {
+                    return Err(BackendError {
+                        message: "Return type not implemented yet.",
+                    });
+                }
+            },
+            None => {
+                compiler.builder.build_return(None);
+            }
+        }
 
         compiler.builder.position_at_end(main_entry);
 
@@ -326,6 +451,13 @@ impl LLVMCodeGen for ExprCall {
         }
 
         // validate function args
+        let arg_count = function.count_params();
+
+        if arg_count != self.args.len() as u32 {
+            return Err(BackendError {
+                message: "Incorrect number of arguments provided.",
+            });
+        }
 
         // codegen args if we have any
         let args = self
@@ -334,15 +466,19 @@ impl LLVMCodeGen for ExprCall {
             .map(|arg| arg.codegen(compiler))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
-        println!("{:?}", args);
-
         let args: Vec<BasicMetadataValueEnum> = args
             .into_iter()
-            .map(|val| match val {
+            .filter_map(|val| match val {
                 AnyValueEnum::IntValue(..) => {
-                    BasicMetadataValueEnum::IntValue(val.into_int_value())
+                    Some(BasicMetadataValueEnum::IntValue(val.into_int_value()))
                 }
-                _ => BasicMetadataValueEnum::PointerValue(val.into_pointer_value()),
+                AnyValueEnum::FloatValue(..) => {
+                    Some(BasicMetadataValueEnum::FloatValue(val.into_float_value()))
+                }
+                AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(
+                    val.into_pointer_value(),
+                )),
+                _ => None,
             })
             .collect();
 
