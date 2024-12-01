@@ -327,10 +327,9 @@ impl TypeInferrer {
 
     pub fn infer_stmt(&mut self, env: &mut TypeEnv, stmt: &Stmt) -> TypeInferenceRes {
         match stmt {
-            // TODO: Implement let rule for assignments and funcdefs
             Stmt::Assign(assign) => {
                 let (rhs_sub, rhs_type) = self.infer_expression(env, &assign.value)?;
-                let mut new_env;
+                let new_env;
                 let var;
                 match &assign.targets[0] {
                     Expr::Name(name) => {
@@ -343,7 +342,7 @@ impl TypeInferrer {
                     }
                 }
                 let general_type = generalise(&rhs_type, &new_env);
-                new_env.insert(var.to_string(), general_type.clone());
+                env.insert(var.to_string(), general_type.clone());
 
                 Ok((rhs_sub, Type::Scheme(general_type)))
             }
@@ -358,7 +357,7 @@ impl TypeInferrer {
                         );
                         func_type
                     }
-                    Err(e) => func_type
+                    Err(_) => func_type
                 }
             },
             Stmt::Expr(StmtExpr { value, .. }) => {
