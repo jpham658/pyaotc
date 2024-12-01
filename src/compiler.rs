@@ -91,7 +91,7 @@ impl<'ctx> Compiler<'ctx> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct BackendError {
     message: &'static str,
 }
@@ -234,17 +234,17 @@ impl LLVMCodeGen for StmtFunctionDef {
         match return_val {
             Some(return_stmt) => match return_stmt {
                 AnyValueEnum::FloatValue(..) => {
-                    compiler
+                    let _ = compiler
                         .builder
                         .build_return(Some(&return_stmt.into_float_value()));
                 }
                 AnyValueEnum::IntValue(..) => {
-                    compiler
+                    let _ = compiler
                         .builder
                         .build_return(Some(&return_stmt.into_int_value()));
                 }
                 AnyValueEnum::PointerValue(..) => {
-                    compiler
+                    let _ = compiler
                         .builder
                         .build_return(Some(&return_stmt.into_pointer_value()));
                 }
@@ -255,7 +255,7 @@ impl LLVMCodeGen for StmtFunctionDef {
                 }
             },
             None => {
-                compiler.builder.build_return(None);
+                let _ = compiler.builder.build_return(None);
             }
         }
 

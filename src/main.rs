@@ -9,9 +9,8 @@ mod type_inference;
 
 fn main() {
     let python_source = r#"
-def add(x: 'int'):
-    return 1 + 1
-add(1)
+def add(x):
+    return x + 1
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
