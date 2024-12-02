@@ -1,21 +1,22 @@
+use std::collections::HashMap;
+
 use compiler::Compiler;
 use inkwell::context::Context;
+use rustpython_parser::{
+    ast::{self, Stmt},
+    Parse,
+};
 use type_inference::{infer_types, Type, TypeEnv, TypeInferrer};
-use rustpython_parser::{ast::{self, Stmt}, Parse};
+
 mod astutils;
 mod compiler;
-mod type_rules;
 mod type_inference;
 
-fn types_pp(types: Vec<(Stmt, Type)>) {
-    let table_header = "Statement number     | Type";
-    println!("{}", table_header);
-    println!("---------------------------------------------------------------------------");
-    for (i, (_, typ)) in types.into_iter().enumerate() {
-        let type_str = format!("{:?}", typ);
-        let line_no = format!("{}", i + 1);
-        let spaces = " ".repeat(20);
-        println!("{}{}| {}", line_no, spaces, type_str);
+fn types_pp(name_to_type: &HashMap<String, Type>) {
+    println!("Name                          Type");
+    println!("-----------------------------------");
+    for (name, typ) in name_to_type.into_iter() {
+        println!("{}                          {:?}", name, typ);
     }
     println!()
 }
@@ -23,30 +24,48 @@ fn types_pp(types: Vec<(Stmt, Type)>) {
 fn main() {
     let python_source = r#"
 def foo(x):
-    return x + 1
-y = foo(3)
+    y = x + 1
+    return y
+def bar():
+    return True
+w = foo(3)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
     let mut type_env = TypeEnv::new();
     let mut type_inferrer = TypeInferrer::new();
-    let mut types: Vec<(Stmt,Type)> = Vec::new();
+    let mut types: HashMap<String, Type> = HashMap::new();
 
     match ast::Suite::parse(&python_source, "<embedded>") {
         Ok(ast) => {
+            // right now we are at the top scope level...
+            // TODO: figure out how to handle scope in TypeEnv and compiler
             astutils::print_ast(&ast);
-            for stmt in ast {
+            for stmt in &ast {
                 match infer_types(&mut type_inferrer, &mut type_env, &stmt) {
-                    Ok(typ) => {
-                        types.push((stmt, typ));
+                    Ok(typ) => match &stmt {
+                        Stmt::FunctionDef(funcdef) => {
+                            let func_name = funcdef.name.as_str().to_string();
+                            types.insert(func_name, typ);
+                        }
+                        Stmt::Assign(assign) => {
+                            let lhs_name = assign.targets[0]
+                                .as_name_expr()
+                                .unwrap()
+                                .id
+                                .as_str()
+                                .to_string();
+                            types.insert(lhs_name, typ);
+                        }
+                        _ => {}
                     },
                     Err(e) => {
                         eprintln!("{:?}", e);
                     }
                 }
             }
-            types_pp(types);
-            // compiler.compile(ast);
+            types_pp(&types);
+            compiler.compile_with_types(&ast, &types);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);
