@@ -1,10 +1,9 @@
-use inkwell::llvm_sys::LLVMType;
 use inkwell::types::{
-    AnyType, AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicType, PointerType,
+    AnyTypeEnum, BasicMetadataTypeEnum,
 };
 use inkwell::values::{
-    AnyValue, AnyValueEnum, ArrayValue, AsValueRef, BasicMetadataValueEnum, BasicValue,
-    BasicValueEnum, FloatValue, IntValue, MetadataValue,
+    AnyValue, AnyValueEnum,BasicMetadataValueEnum,
+    FloatValue,
 };
 use inkwell::AddressSpace;
 use inkwell::{builder::Builder, context::Context, module::Module};
@@ -12,7 +11,6 @@ use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
     ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
-    StmtReturn,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -242,6 +240,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                     Type::ConcreteType(ConcreteValue::Int) => compiler.context.i64_type().into(),
                     Type::ConcreteType(ConcreteValue::Float) => compiler.context.f64_type().into(),
                     _ => {
+                        
                         compiler.context.i8_type().into() // TODO: better way to handle this
                     }
                 }
