@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::codegen::generic_codegen::LLVMCodeGen;
+use crate::codegen::generic_codegen::LLVMGenericCodegen;
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
 use crate::type_inference::Type;
 
@@ -50,7 +50,7 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub fn compile_with_types(&self, ast: &[Stmt], types: &HashMap<String, Type>) {
+    pub fn compile(&self, ast: &[Stmt], types: &HashMap<String, Type>) {
         let i32_type = self.context.i32_type();
         self.setup_compiler();
 
@@ -85,7 +85,10 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub fn compile(&self, ast: &[Stmt]) {
+    // Realistically, any program compiled without types is
+    // is functionally equivalent to a program compiled with types -
+    // it's just way slower, and way uglier
+    pub fn compile_generically(&self, ast: &[Stmt]) {
         let i32_type = self.context.i32_type();
         self.setup_compiler();
 
@@ -97,7 +100,7 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(main_entry);
 
         for statement in ast {
-            match statement.codegen(&self) {
+            match statement.generic_codegen(&self) {
                 Ok(_ir) => {}
                 Err(e) => {
                     println!("{:?}", e);

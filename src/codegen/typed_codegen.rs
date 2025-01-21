@@ -16,10 +16,6 @@ use crate::compiler::Compiler;
 
 use super::error::{BackendError, IRGenResult};
 
-pub trait LLVMCodeGen {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
-}
-
 pub trait LLVMTypedCodegen {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
@@ -36,12 +32,12 @@ impl LLVMTypedCodegen for Stmt {
     ) -> IRGenResult<'ir> {
         match self {
             Stmt::Expr(StmtExpr { value, .. }) => value.typed_codegen(compiler, types),
-            Stmt::Assign(assign) => assign.codegen(compiler),
+            Stmt::Assign(assign) => assign.typed_codegen(compiler, types),
             Stmt::Return(return_stmt) => match &return_stmt.value {
                 None => Err(BackendError {
                     message: "Not implemented return by itself yet",
                 }),
-                Some(expr) => expr.codegen(compiler),
+                Some(expr) => expr.typed_codegen(compiler, types),
             },
             Stmt::FunctionDef(funcdef) => funcdef.typed_codegen(compiler, types),
             _ => Err(BackendError {
@@ -288,130 +284,14 @@ impl LLVMTypedCodegen for StmtFunctionDef {
     }
 }
 
-impl LLVMTypedCodegen for Expr {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
-    ) -> IRGenResult<'ir> {
-        match self {
-            // Expr::BinOp(binop) => binop.typed_codegen(compiler, types),
-            Expr::Call(call) => call.typed_codegen(compiler, types),
-            _ => self.codegen(compiler), //TODO: Implement typed codegen for binops
-        }
-    }
-}
-
-impl LLVMTypedCodegen for ExprCall {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
-    ) -> IRGenResult<'ir> {
-        // Use virtual table built by funcdef
-        // if arguments all match given types, then call specific
-        // otherwise call generic
-        Err(BackendError {
-            message: "Not implemented yet...",
-        })
-    }
-}
-
-impl LLVMCodeGen for ExprBinOp {
-    /**
-     * Only called when we want to create a generic function.
-     */
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        let left = self.left.codegen(compiler)?; // Loads Any struct 
-        let right = self.right.codegen(compiler)?; // Loads Any struct
-        match self.op {
-            Operator::Add => {
-                // call generic add
-                let g_add = compiler.module
-                    .get_function("g_add")
-                    .expect("Generic addition function has not been declared");
-                let g_add_call = compiler.builder.build_call(g_add, &[
-                        BasicMetadataValueEnum::StructValue(left.into_struct_value()), 
-                        BasicMetadataValueEnum::StructValue(right.into_struct_value())
-                    ], "g_add_call") // TODO: Declare g_add function in setup ...
-                    .expect("Could not perform generic add.");
-                Ok(g_add_call.as_any_value_enum())
-            }
-            _ => Err(BackendError {
-                message: "Not implemented yet...",
-            })
-        }
-    }
-}
-
-impl LLVMCodeGen for Stmt {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        match self {
-            Stmt::Expr(StmtExpr { value, .. }) => value.codegen(compiler),
-            Stmt::Assign(assign) => assign.codegen(compiler),
-            _ => Err(BackendError {
-                message: "Not implemented yet...",
-            }),
-        }
-    }
-}
-
-impl LLVMCodeGen for StmtFunctionDef {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        // All arguments are generic Any containers
-        // So generate code for function body as generic as possible
-        let main_entry = compiler
-            .builder
-            .get_insert_block()
-            .expect("Builder isn't mapped to a basic block?");
-
-        let func_name = format!("g_{}", self.name.as_str());
-        let any_args: Vec<BasicMetadataTypeEnum> = self
-            .args
-            .args
-            .clone()
-            .into_iter()
-            .map(|a| compiler.any_type.into())
-            .collect();
-
-        // Declare function with Any return type
-        let func_type = compiler.any_type.fn_type(&any_args, false);
-        let func_def = compiler.module.add_function(func_name.as_str(), func_type, None);
-
-        let func_entry = compiler.context.append_basic_block(func_def, "entry");
-        compiler.builder.position_at_end(func_entry);
-        let mut return_stmts = Vec::new();
-
-        // build function body
-        for statement in &self.body {
-            let res = statement.codegen(compiler);
-            match res {
-                Err(e) => return Err(e),
-                Ok(ir) => match statement {
-                    Stmt::Return(..) => {
-                        return_stmts.push(ir);
-                    }
-                    _ => {}
-                },
-            }
-        }
-
-        compiler.builder.position_at_end(main_entry);
-
-        Err(BackendError {
-            message: "Not implemented yet...",
-        })
-    }
-}
-
-impl LLVMCodeGen for StmtAssign {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMTypedCodegen for StmtAssign {
+    fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         match &self.targets[0] {
             Expr::Name(exprname) => {
                 let target_name = exprname.id.as_str();
                 let value = &self
                     .value
-                    .codegen(compiler)
+                    .typed_codegen(compiler, types)
                     .expect("Failed to compute right side of assignment.");
 
                 let mut sym_table = compiler.sym_table.borrow_mut();
@@ -494,17 +374,17 @@ impl LLVMCodeGen for StmtAssign {
     }
 }
 
-impl LLVMCodeGen for Expr {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMTypedCodegen for Expr {
+    fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         match self {
-            Expr::BinOp(binop) => binop.codegen(compiler),
-            Expr::Constant(constant) => constant.codegen(compiler),
-            Expr::Name(name) => name.codegen(compiler),
-            Expr::Call(call) => call.codegen(compiler),
-            Expr::BoolOp(boolop) => boolop.codegen(compiler),
-            Expr::UnaryOp(unop) => unop.codegen(compiler),
-            Expr::IfExp(ifexp) => ifexp.codegen(compiler),
-            Expr::List(list) => list.codegen(compiler),
+            Expr::BinOp(binop) => binop.typed_codegen(compiler, types),
+            Expr::Constant(constant) => constant.typed_codegen(compiler, types),
+            Expr::Name(name) => name.typed_codegen(compiler, types),
+            Expr::Call(call) => call.typed_codegen(compiler, types),
+            Expr::BoolOp(boolop) => boolop.typed_codegen(compiler, types),
+            Expr::UnaryOp(unop) => unop.typed_codegen(compiler, types),
+            Expr::IfExp(ifexp) => ifexp.typed_codegen(compiler, types),
+            Expr::List(list) => list.typed_codegen(compiler, types),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
@@ -512,37 +392,37 @@ impl LLVMCodeGen for Expr {
     }
 }
 
-impl LLVMCodeGen for ExprList {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMTypedCodegen for ExprList {
+        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
         })
     }
 }
 
-impl LLVMCodeGen for ExprIfExp {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMTypedCodegen for ExprIfExp {
+        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
         })
     }
 }
 
-impl LLVMCodeGen for ExprUnaryOp {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMTypedCodegen for ExprUnaryOp {
+        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
         })
     }
 }
 
-impl LLVMCodeGen for ExprBoolOp {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMTypedCodegen for ExprBoolOp {
+        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         let values = self
             .values
             .clone()
             .into_iter()
-            .map(|val| val.codegen(compiler).unwrap())
+            .map(|val| val.typed_codegen(compiler, types).unwrap())
             .collect::<Vec<_>>();
 
         let true_val = compiler.context.i8_type().const_int(1, false);
@@ -570,9 +450,9 @@ impl LLVMCodeGen for ExprBoolOp {
     }
 }
 
-impl LLVMCodeGen for ExprCall {
+impl LLVMTypedCodegen for ExprCall {
     // TODO: Refactor to consider general and specific types.
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         let func_name = self
             .func
             .as_name_expr()
@@ -604,7 +484,7 @@ impl LLVMCodeGen for ExprCall {
         let args = self
             .args
             .iter()
-            .map(|arg| arg.codegen(compiler))
+            .map(|arg| arg.typed_codegen(compiler, types))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
         if func_name.eq("print") {
@@ -639,8 +519,8 @@ impl LLVMCodeGen for ExprCall {
     }
 }
 
-impl LLVMCodeGen for ExprName {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMTypedCodegen for ExprName {
+        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
                 let name = self.id.as_str();
@@ -667,8 +547,8 @@ impl LLVMCodeGen for ExprName {
     }
 }
 
-impl LLVMCodeGen for ExprConstant {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMTypedCodegen for ExprConstant {
+        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
         match &self.value {
             Constant::Float(num) => {
                 let f64_type = compiler.context.f64_type();
@@ -718,8 +598,8 @@ impl LLVMTypedCodegen for ExprBinOp {
         // Then call generic functions like g_add(Any left, Any right), g_sub(Any left, Any right), etc.
         // But, how do I cast AnyValueEnums...?
         let op = self.op;
-        let left = self.left.codegen(compiler)?;
-        let right = self.right.codegen(compiler)?;
+        let left = self.left.typed_codegen(compiler, types)?;
+        let right = self.right.typed_codegen(compiler, types)?;
         let res = match op {
             Operator::Add => {
                 if left.is_int_value() && right.is_int_value() {

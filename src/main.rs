@@ -65,7 +65,7 @@ add(1.0)
                 }
             }
             types_pp(&types);
-            compiler.compile_with_types(&ast, &types);
+            compiler.compile(&ast, &types);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);

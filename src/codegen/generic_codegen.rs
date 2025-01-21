@@ -1,329 +1,29 @@
 use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum};
-use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue};
-use inkwell::AddressSpace;
+use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
     ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
 };
-use std::collections::HashMap;
 
 use crate::compiler_utils::print_fn::print_fn;
 use crate::compiler_utils::to_any_type::ToAnyType;
-use crate::type_inference::{ConcreteValue, Scheme, Type};
 use crate::compiler::Compiler;
 
 use super::error::{BackendError, IRGenResult};
 
 
-pub trait LLVMCodeGen {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
+pub trait LLVMGenericCodegen {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
 }
 
-pub trait LLVMTypedCodegen {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
-    ) -> IRGenResult<'ir>;
-}
-
-impl LLVMTypedCodegen for Stmt {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
-    ) -> IRGenResult<'ir> {
-        match self {
-            Stmt::Expr(StmtExpr { value, .. }) => value.typed_codegen(compiler, types),
-            Stmt::Assign(assign) => assign.codegen(compiler),
-            Stmt::Return(return_stmt) => match &return_stmt.value {
-                None => Err(BackendError {
-                    message: "Not implemented return by itself yet",
-                }),
-                Some(expr) => expr.codegen(compiler),
-            },
-            Stmt::FunctionDef(funcdef) => funcdef.typed_codegen(compiler, types),
-            _ => Err(BackendError {
-                message: "Not implemented yet...",
-            }),
-        }
-    }
-}
-
-impl LLVMTypedCodegen for StmtFunctionDef {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
-    ) -> IRGenResult<'ir> {
-        // save main entry point
-        let main_entry = compiler
-            .builder
-            .get_insert_block()
-            .expect("Builder isn't mapped to a basic block?");
-
-        let func_name = self.name.as_str();
-        let func_type;
-        match types.get(func_name) {
-            Some(typ) => func_type = typ,
-            None => {
-                return Err(BackendError {
-                    message: "Function {func_name} not typed.",
-                })
-            }
-        }
-
-        // get argument and return types
-        let mut arg_types: Vec<Type> = Vec::new();
-        let return_type: Type;
-        match &func_type {
-            Type::FuncType(func) => {
-                let initial_input = *func.input.clone();
-                // Don't add argument if it has type None (to deal with empty args)
-                match initial_input {
-                    Type::ConcreteType(ConcreteValue::None) => {}
-                    _ => arg_types.push(*func.input.clone()),
-                }
-                let mut current_output = &*func.output;
-                while let Type::FuncType(funcval) = current_output {
-                    arg_types.push(*funcval.input.clone());
-                    current_output = &*funcval.output;
-                }
-                return_type = current_output.clone();
-            }
-            _ => {
-                return Err(BackendError {
-                    message: "Function {func_name} type is not a FuncType.",
-                })
-            }
-        }
-
-        let llvm_arg_types: Vec<BasicMetadataTypeEnum> = arg_types
-            .into_iter()
-            .map(|arg_type| {
-                match arg_type {
-                    Type::ConcreteType(ConcreteValue::Int) => compiler.context.i64_type().into(),
-                    Type::ConcreteType(ConcreteValue::Float) => compiler.context.f64_type().into(),
-                    _ => {
-                        compiler.context.i8_type().into() // TODO: better way to handle this
-                    }
-                }
-            })
-            .collect();
-
-        // TODO: PLEASE PLEASE PLEASE refactor this omg it's so ugly wtf
-        let llvm_return_type = match &return_type {
-            Type::ConcreteType(ConcreteValue::Int) => {
-                compiler.context.i64_type().fn_type(&llvm_arg_types, false)
-            }
-            Type::ConcreteType(ConcreteValue::Float) => {
-                compiler.context.f64_type().fn_type(&llvm_arg_types, false)
-            }
-            Type::ConcreteType(ConcreteValue::Bool) | Type::ConcreteType(ConcreteValue::Str) => {
-                compiler.context.i8_type().fn_type(&llvm_arg_types, false)
-            }
-            Type::ConcreteType(ConcreteValue::None) => {
-                compiler.context.void_type().fn_type(&llvm_arg_types, false)
-            }
-            Type::Scheme(Scheme { type_name, .. }) => match **type_name {
-                Type::ConcreteType(ConcreteValue::Int) => {
-                    compiler.context.i64_type().fn_type(&llvm_arg_types, false)
-                }
-                Type::ConcreteType(ConcreteValue::Float) => {
-                    compiler.context.f64_type().fn_type(&llvm_arg_types, false)
-                }
-                Type::ConcreteType(ConcreteValue::Bool)
-                | Type::ConcreteType(ConcreteValue::Str) => {
-                    compiler.context.i8_type().fn_type(&llvm_arg_types, false)
-                }
-                _ => {
-                    println!("{:?}", return_type);
-                    return Err(BackendError {
-                        message: "Not a valid function return type after visiting scheme.",
-                    });
-                }
-            },
-            _ => {
-                println!("{:?}", return_type);
-                return Err(BackendError {
-                    message: "Not a valid function return type.",
-                });
-            }
-        };
-
-        let func_def = compiler
-            .module
-            .add_function(func_name, llvm_return_type, None);
-
-        // make map for argument values
-        let args = self
-            .args
-            .args
-            .clone()
-            .into_iter()
-            .map(|arg| arg.def.arg.as_str().to_string())
-            .collect::<Vec<_>>();
-        let arg_map = args
-            .into_iter()
-            .zip(func_def.get_param_iter())
-            .collect::<HashMap<_, _>>()
-            .into_iter()
-            .map(|(k, v)| (k.clone(), v.as_any_value_enum()))
-            .collect::<HashMap<_, _>>();
-
-        {
-            let mut func_args = compiler.func_args.borrow_mut();
-            func_args.extend(arg_map.clone());
-        }
-
-        let func_entry = compiler.context.append_basic_block(func_def, "entry");
-        compiler.builder.position_at_end(func_entry);
-        let mut return_stmts = Vec::new();
-
-        // build function body
-        for statement in &self.body {
-            let res = statement.typed_codegen(compiler, types);
-            match res {
-                Err(e) => return Err(e),
-                Ok(ir) => match statement {
-                    Stmt::Return(..) => {
-                        return_stmts.push(ir);
-                    }
-                    _ => {}
-                },
-            }
-        }
-
-        // assume for now we only have one return statement at the end of our function
-        match &return_type {
-            Type::ConcreteType(ConcreteValue::Int) => {
-                let _ = compiler
-                    .builder
-                    .build_return(Some(&return_stmts[0].into_int_value()));
-            }
-            Type::ConcreteType(ConcreteValue::Float) => {
-                let _ = compiler
-                    .builder
-                    .build_return(Some(&return_stmts[0].into_float_value()));
-            }
-            Type::ConcreteType(ConcreteValue::Bool) => {
-                let _ = compiler
-                    .builder
-                    .build_return(Some(&return_stmts[0].into_int_value()));
-            }
-            Type::ConcreteType(ConcreteValue::Str) => {
-                let _ = compiler
-                    .builder
-                    .build_return(Some(&return_stmts[0].into_pointer_value()));
-            }
-
-            Type::Scheme(Scheme { type_name, .. }) => match **type_name {
-                Type::ConcreteType(ConcreteValue::Int) => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&return_stmts[0].into_int_value()));
-                }
-                Type::ConcreteType(ConcreteValue::Float) => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&return_stmts[0].into_float_value()));
-                }
-                Type::ConcreteType(ConcreteValue::Bool) => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&return_stmts[0].into_int_value()));
-                }
-                Type::ConcreteType(ConcreteValue::Str) => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&return_stmts[0].into_pointer_value()));
-                }
-                _ => {
-                    println!("{:?}", return_type);
-                    return Err(BackendError {
-                        message: "Not a valid function return type after visiting scheme.",
-                    });
-                }
-            },
-            _ => {
-                return Err(BackendError {
-                    message: "Not a valid function return type.",
-                })
-            }
-        };
-
-        // reset back to normal!
-        compiler.builder.position_at_end(main_entry);
-        {
-            let mut func_args = compiler.func_args.borrow_mut();
-            func_args.clear();
-        }
-
-        // EXPERIMENTS...
-        // let's mimic the casting on an argument, store AnyInt in Any
-        let x_any = (30i64).to_any_type(&compiler);
-        println!("x's ptr type: {:?}", x_any.get_type());
-
-        // Cast Any to AnyInt if it is indeed storing an int
-        // TODO: Make this a separate predefined method (instanceof)
-        let any_int_type_ptr = compiler.any_int_type.ptr_type(AddressSpace::default());
-        let casted_x_ptr = compiler
-            .builder
-            .build_bit_cast(x_any, any_int_type_ptr, "casted_to_i") // TODO: Fresh var generator
-            .expect("Error: Could not cast Any container pointer to integer variation.");
-        println!("Type of ptr after casting: {:?}", casted_x_ptr);
-
-        let x_val_ptr = compiler
-            .builder
-            .build_struct_gep(casted_x_ptr.into_pointer_value(), 1, "x_val_ptr")
-            .expect("Error: Could not get pointer to x's value.");
-        let x_val = compiler
-            .builder
-            .build_load(x_val_ptr, "x_val")
-            .expect("Error: Could not load x's value.");
-        println!("Type of x's val: {:?}", x_val.get_type());
-
-        Ok(func_def.as_any_value_enum())
-    }
-}
-
-impl LLVMTypedCodegen for Expr {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
-    ) -> IRGenResult<'ir> {
-        match self {
-            // Expr::BinOp(binop) => binop.typed_codegen(compiler, types),
-            Expr::Call(call) => call.typed_codegen(compiler, types),
-            _ => self.codegen(compiler), //TODO: Implement typed codegen for binops
-        }
-    }
-}
-
-impl LLVMTypedCodegen for ExprCall {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
-    ) -> IRGenResult<'ir> {
-        // Use virtual table built by funcdef
-        // if arguments all match given types, then call specific
-        // otherwise call generic
-        Err(BackendError {
-            message: "Not implemented yet...",
-        })
-    }
-}
-
-impl LLVMCodeGen for ExprBinOp {
+impl LLVMGenericCodegen for ExprBinOp {
     /**
      * Only called when we want to create a generic function.
      */
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        let left = self.left.codegen(compiler)?; // Loads Any struct 
-        let right = self.right.codegen(compiler)?; // Loads Any struct
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        let left = self.left.generic_codegen(compiler)?; // Loads Any struct 
+        let right = self.right.generic_codegen(compiler)?; // Loads Any struct
         match self.op {
             Operator::Add => {
                 // call generic add
@@ -344,11 +44,11 @@ impl LLVMCodeGen for ExprBinOp {
     }
 }
 
-impl LLVMCodeGen for Stmt {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for Stmt {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self {
-            Stmt::Expr(StmtExpr { value, .. }) => value.codegen(compiler),
-            Stmt::Assign(assign) => assign.codegen(compiler),
+            Stmt::Expr(StmtExpr { value, .. }) => value.generic_codegen(compiler),
+            Stmt::Assign(assign) => assign.generic_codegen(compiler),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
@@ -356,8 +56,8 @@ impl LLVMCodeGen for Stmt {
     }
 }
 
-impl LLVMCodeGen for StmtFunctionDef {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for StmtFunctionDef {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         // All arguments are generic Any containers
         // So generate code for function body as generic as possible
         let main_entry = compiler
@@ -384,7 +84,7 @@ impl LLVMCodeGen for StmtFunctionDef {
 
         // build function body
         for statement in &self.body {
-            let res = statement.codegen(compiler);
+            let res = statement.generic_codegen(compiler);
             match res {
                 Err(e) => return Err(e),
                 Ok(ir) => match statement {
@@ -404,14 +104,14 @@ impl LLVMCodeGen for StmtFunctionDef {
     }
 }
 
-impl LLVMCodeGen for StmtAssign {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for StmtAssign {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match &self.targets[0] {
             Expr::Name(exprname) => {
                 let target_name = exprname.id.as_str();
                 let value = &self
                     .value
-                    .codegen(compiler)
+                    .generic_codegen(compiler)
                     .expect("Failed to compute right side of assignment.");
 
                 let mut sym_table = compiler.sym_table.borrow_mut();
@@ -494,17 +194,17 @@ impl LLVMCodeGen for StmtAssign {
     }
 }
 
-impl LLVMCodeGen for Expr {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for Expr {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self {
-            Expr::BinOp(binop) => binop.codegen(compiler),
-            Expr::Constant(constant) => constant.codegen(compiler),
-            Expr::Name(name) => name.codegen(compiler),
-            Expr::Call(call) => call.codegen(compiler),
-            Expr::BoolOp(boolop) => boolop.codegen(compiler),
-            Expr::UnaryOp(unop) => unop.codegen(compiler),
-            Expr::IfExp(ifexp) => ifexp.codegen(compiler),
-            Expr::List(list) => list.codegen(compiler),
+            Expr::BinOp(binop) => binop.generic_codegen(compiler),
+            Expr::Constant(constant) => constant.generic_codegen(compiler),
+            Expr::Name(name) => name.generic_codegen(compiler),
+            Expr::Call(call) => call.generic_codegen(compiler),
+            Expr::BoolOp(boolop) => boolop.generic_codegen(compiler),
+            Expr::UnaryOp(unop) => unop.generic_codegen(compiler),
+            Expr::IfExp(ifexp) => ifexp.generic_codegen(compiler),
+            Expr::List(list) => list.generic_codegen(compiler),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
@@ -512,37 +212,37 @@ impl LLVMCodeGen for Expr {
     }
 }
 
-impl LLVMCodeGen for ExprList {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for ExprList {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
         })
     }
 }
 
-impl LLVMCodeGen for ExprIfExp {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for ExprIfExp {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
         })
     }
 }
 
-impl LLVMCodeGen for ExprUnaryOp {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for ExprUnaryOp {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
         })
     }
 }
 
-impl LLVMCodeGen for ExprBoolOp {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for ExprBoolOp {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         let values = self
             .values
             .clone()
             .into_iter()
-            .map(|val| val.codegen(compiler).unwrap())
+            .map(|val| val.generic_codegen(compiler).unwrap())
             .collect::<Vec<_>>();
 
         let true_val = compiler.context.i8_type().const_int(1, false);
@@ -570,9 +270,9 @@ impl LLVMCodeGen for ExprBoolOp {
     }
 }
 
-impl LLVMCodeGen for ExprCall {
+impl LLVMGenericCodegen for ExprCall {
     // TODO: Refactor to consider general and specific types.
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         let func_name = self
             .func
             .as_name_expr()
@@ -600,11 +300,11 @@ impl LLVMCodeGen for ExprCall {
             });
         }
 
-        // codegen args if we have any
+        // generic_codegen args if we have any
         let args = self
             .args
             .iter()
-            .map(|arg| arg.codegen(compiler))
+            .map(|arg| arg.generic_codegen(compiler))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
         if func_name.eq("print") {
@@ -639,8 +339,8 @@ impl LLVMCodeGen for ExprCall {
     }
 }
 
-impl LLVMCodeGen for ExprName {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for ExprName {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
                 let name = self.id.as_str();
@@ -667,8 +367,8 @@ impl LLVMCodeGen for ExprName {
     }
 }
 
-impl LLVMCodeGen for ExprConstant {
-    fn codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+impl LLVMGenericCodegen for ExprConstant {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match &self.value {
             Constant::Float(num) => {
                 let f64_type = compiler.context.f64_type();
@@ -706,153 +406,4 @@ impl LLVMCodeGen for ExprConstant {
             }),
         }
     }
-}
-
-impl LLVMTypedCodegen for ExprBinOp {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
-    ) -> IRGenResult<'ir> {
-        // TODO: So this part becomes convert whatever left and right are to Any type
-        // Then call generic functions like g_add(Any left, Any right), g_sub(Any left, Any right), etc.
-        // But, how do I cast AnyValueEnums...?
-        let op = self.op;
-        let left = self.left.codegen(compiler)?;
-        let right = self.right.codegen(compiler)?;
-        let res = match op {
-            Operator::Add => {
-                if left.is_int_value() && right.is_int_value() {
-                    compiler
-                        .builder
-                        .build_int_add(left.into_int_value(), right.into_int_value(), &"add")
-                        .expect("Could not perform int addition")
-                        .as_any_value_enum()
-                } else {
-                    let float_map = get_left_and_right_as_floats(compiler, left, right);
-                    let lhs = float_map
-                        .get(&left)
-                        .and_then(|opt| *opt)
-                        .expect("Left operand could not be converted.");
-                    let rhs = float_map
-                        .get(&right)
-                        .and_then(|opt| *opt)
-                        .expect("Right operand could not be converted.");
-
-                    compiler
-                        .builder
-                        .build_float_add(lhs, rhs, &"fadd")
-                        .expect("Could not perform float addition")
-                        .as_any_value_enum()
-                }
-            }
-            Operator::Sub => {
-                if left.is_int_value() && right.is_int_value() {
-                    compiler
-                        .builder
-                        .build_int_sub(left.into_int_value(), right.into_int_value(), &"sub")
-                        .expect("Could not perform int subtraction")
-                        .as_any_value_enum()
-                } else {
-                    let float_map = get_left_and_right_as_floats(compiler, left, right);
-                    let lhs = float_map
-                        .get(&left)
-                        .and_then(|opt| *opt)
-                        .expect("Left operand could not be converted.");
-                    let rhs = float_map
-                        .get(&right)
-                        .and_then(|opt| *opt)
-                        .expect("Right operand could not be converted.");
-                    compiler
-                        .builder
-                        .build_float_sub(lhs, rhs, &"fsub")
-                        .expect("Could not perform float subtraction")
-                        .as_any_value_enum()
-                }
-            }
-            Operator::Mult => {
-                if left.is_int_value() && right.is_int_value() {
-                    compiler
-                        .builder
-                        .build_int_mul(left.into_int_value(), right.into_int_value(), &"mul")
-                        .expect("Could not perform int multiplication")
-                        .as_any_value_enum()
-                } else {
-                    let float_map = get_left_and_right_as_floats(compiler, left, right);
-                    let lhs = float_map
-                        .get(&left)
-                        .and_then(|opt| *opt)
-                        .expect("Left operand could not be converted.");
-                    let rhs = float_map
-                        .get(&right)
-                        .and_then(|opt| *opt)
-                        .expect("Right operand could not be converted.");
-                    compiler
-                        .builder
-                        .build_float_mul(lhs, rhs, &"fmul")
-                        .expect("Could not perform float multiplication")
-                        .as_any_value_enum()
-                }
-            }
-            Operator::Div => {
-                let lhs;
-                let rhs;
-                let f64_type = compiler.context.f64_type();
-                if let AnyValueEnum::IntValue(left_val) = left {
-                    lhs = left_val.const_signed_to_float(f64_type);
-                } else {
-                    lhs = left.into_float_value();
-                }
-                if let AnyValueEnum::IntValue(right_val) = right {
-                    rhs = right_val.const_signed_to_float(f64_type);
-                } else {
-                    rhs = right.into_float_value();
-                }
-
-                compiler
-                    .builder
-                    .build_float_div(lhs, rhs, &"fdiv")
-                    .expect("Could not perform float division")
-                    .as_any_value_enum()
-            }
-            _ => {
-                return Err(BackendError {
-                    message: "Unsupported operator",
-                })
-            }
-        };
-        Ok(res)
-    }
-}
-
-fn get_left_and_right_as_floats<'ctx>(
-    compiler: &Compiler<'ctx>,
-    left: AnyValueEnum<'ctx>,
-    right: AnyValueEnum<'ctx>,
-) -> std::collections::HashMap<AnyValueEnum<'ctx>, Option<FloatValue<'ctx>>> {
-    let mut float_map = std::collections::HashMap::new();
-    let lhs;
-    let rhs;
-    let f64_type = compiler.context.f64_type();
-    match (left, right) {
-        (AnyValueEnum::IntValue(left_int), _) => {
-            lhs = Some(left_int.const_signed_to_float(f64_type));
-            rhs = Some(right.into_float_value());
-        }
-        (_, AnyValueEnum::IntValue(right_int)) => {
-            lhs = Some(left.into_float_value());
-            rhs = Some(right_int.const_signed_to_float(f64_type));
-        }
-        (AnyValueEnum::FloatValue(..), AnyValueEnum::FloatValue(..)) => {
-            lhs = Some(left.into_float_value());
-            rhs = Some(right.into_float_value());
-        }
-        _ => {
-            lhs = None;
-            rhs = None;
-        }
-    }
-    float_map.insert(left, lhs);
-    float_map.insert(right, rhs);
-    float_map
 }
