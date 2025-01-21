@@ -1,5 +1,10 @@
-use std::collections::HashMap;
+mod astutils;
+mod compiler;
+mod type_inference;
+mod compiler_utils;
+mod codegen;
 
+use std::collections::HashMap;
 use compiler::Compiler;
 use inkwell::context::Context;
 use rustpython_parser::{
@@ -7,10 +12,6 @@ use rustpython_parser::{
     Parse,
 };
 use type_inference::{infer_types, Type, TypeEnv, TypeInferrer};
-
-mod astutils;
-mod compiler;
-mod type_inference;
 
 fn types_pp(name_to_type: &HashMap<String, Type>) {
     println!("Name                          Type");
@@ -23,12 +24,11 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-def foo(x):
-    y = x + 1
-    return y
-def bar():
-    return True
-w = foo(3)
+def add(x):
+    return x + 1
+
+add(3 + 2 + 1)
+add(1.0)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);

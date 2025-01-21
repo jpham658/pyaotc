@@ -1,5 +1,7 @@
 use std::{
-    any::Any, collections::{HashMap, HashSet}, hash::Hash
+    any::Any,
+    collections::{HashMap, HashSet},
+    hash::Hash,
 };
 
 use rustpython_parser::ast::{
@@ -70,7 +72,11 @@ pub type Sub = HashMap<String, Type>;
 //                     TYPE INFERRER
 //  ====================================================
 
-pub fn infer_types(inferrer: &mut TypeInferrer, env: &mut TypeEnv, stmt: &Stmt) -> Result<Type, InferenceError> {
+pub fn infer_types(
+    inferrer: &mut TypeInferrer,
+    env: &mut TypeEnv,
+    stmt: &Stmt,
+) -> Result<Type, InferenceError> {
     let (sub, inferred_type) = inferrer.infer_stmt(env, stmt)?;
     Ok(apply(&sub, &inferred_type))
 }
@@ -196,7 +202,7 @@ impl TypeInferrer {
 
         let return_type: (Sub, Type);
 
-        if return_stmts.len() > 0 {
+        if !return_stmts.is_empty() {
             // assume all return stmts return same type for now
             if let Some(StmtReturn {
                 value: return_stmt, ..
@@ -219,31 +225,29 @@ impl TypeInferrer {
             return_type = (Sub::new(), Type::ConcreteType(ConcreteValue::None));
         }
 
-        let func_type;
-
-        if arg_types.len() == 0 {
-            let return_type_clone = return_type.clone();
-            func_type = (
-                Sub::new(),
-                Type::FuncType(FuncTypeValue {
-                    input: Box::new(Type::ConcreteType(ConcreteValue::None)),
-                    output: Box::new(return_type_clone.1),
-                }),
-            );
-        } else {
-            func_type = arg_types
-                .into_iter()
-                .rev()
-                .fold(return_type.clone(), |acc, arg_type| {
-                    // Compose the substitution and create the function type
-                    let result_subs = compose_subs(&subs, &acc.0);
-                    let func_type = Type::FuncType(FuncTypeValue {
-                        input: Box::new(arg_type),
-                        output: Box::new(acc.1),
-                    });
-                    (result_subs, func_type)
-                });
-        }
+        let func_type = if arg_types.len() == 0 {
+                let return_type_clone = return_type.clone();
+                (
+                    Sub::new(),
+                    Type::FuncType(FuncTypeValue {
+                        input: Box::new(Type::ConcreteType(ConcreteValue::None)),
+                        output: Box::new(return_type_clone.1),
+                    }),
+                )
+            } else {
+                arg_types
+                    .into_iter()
+                    .rev()
+                    .fold(return_type.clone(), |acc, arg_type| {
+                        // Compose the substitution and create the function type
+                        let result_subs = compose_subs(&subs, &acc.0);
+                        let func_type = Type::FuncType(FuncTypeValue {
+                            input: Box::new(arg_type),
+                            output: Box::new(acc.1),
+                        });
+                        (result_subs, func_type)
+                    })
+            };
 
         let resultant_sub = func_type.0.clone();
         Ok((func_type.0, apply(&resultant_sub, &func_type.1)))
@@ -351,18 +355,13 @@ impl TypeInferrer {
                 match &func_type {
                     Ok(pair) => {
                         let generalised_functype = generalise(&pair.1, env);
-                        env.insert(
-                            funcdef.name.as_str().to_string(),
-                            generalised_functype
-                        );
+                        env.insert(funcdef.name.as_str().to_string(), generalised_functype);
                         func_type
                     }
-                    Err(_) => func_type
+                    Err(_) => func_type,
                 }
-            },
-            Stmt::Expr(StmtExpr { value, .. }) => {
-                self.infer_expression(env, &**value)
-            },
+            }
+            Stmt::Expr(StmtExpr { value, .. }) => self.infer_expression(env, &**value),
             Stmt::Return(StmtReturn { value, .. }) => match value {
                 Some(expr) => self.infer_expression(env, expr),
                 None => Ok((Sub::new(), Type::ConcreteType(ConcreteValue::None))),
