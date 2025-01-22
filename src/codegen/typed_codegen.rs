@@ -256,30 +256,6 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             func_args.clear();
         }
 
-        // EXPERIMENTS...
-        // let's mimic the casting on an argument, store AnyInt in Any
-        let x_any = (30i64).to_any_type(&compiler);
-        println!("x's ptr type: {:?}", x_any.get_type());
-
-        // Cast Any to AnyInt if it is indeed storing an int
-        // TODO: Make this a separate predefined method (instanceof)
-        let any_int_type_ptr = compiler.any_int_type.ptr_type(AddressSpace::default());
-        let casted_x_ptr = compiler
-            .builder
-            .build_bit_cast(x_any, any_int_type_ptr, "casted_to_i") // TODO: Fresh var generator
-            .expect("Error: Could not cast Any container pointer to integer variation.");
-        println!("Type of ptr after casting: {:?}", casted_x_ptr);
-
-        let x_val_ptr = compiler
-            .builder
-            .build_struct_gep(casted_x_ptr.into_pointer_value(), 1, "x_val_ptr")
-            .expect("Error: Could not get pointer to x's value.");
-        let x_val = compiler
-            .builder
-            .build_load(x_val_ptr, "x_val")
-            .expect("Error: Could not load x's value.");
-        println!("Type of x's val: {:?}", x_val.get_type());
-
         Ok(func_def.as_any_value_enum())
     }
 }

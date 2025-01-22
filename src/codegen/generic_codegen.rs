@@ -6,12 +6,11 @@ use rustpython_parser::ast::{
     ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
 };
 
-use crate::compiler_utils::print_fn::print_fn;
-use crate::compiler_utils::to_any_type::ToAnyType;
 use crate::compiler::Compiler;
+use crate::compiler_utils::print_fn::{build_print_any_fn, print_fn};
+use crate::compiler_utils::to_any_type::ToAnyType;
 
 use super::error::{BackendError, IRGenResult};
-
 
 pub trait LLVMGenericCodegen {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
@@ -22,24 +21,31 @@ impl LLVMGenericCodegen for ExprBinOp {
      * Only called when we want to create a generic function.
      */
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        let left = self.left.generic_codegen(compiler)?; // Loads Any struct 
+        let left = self.left.generic_codegen(compiler)?; // Loads Any struct
         let right = self.right.generic_codegen(compiler)?; // Loads Any struct
         match self.op {
             Operator::Add => {
                 // call generic add
-                let g_add = compiler.module
+                let g_add = compiler
+                    .module
                     .get_function("g_add")
                     .expect("Generic addition function has not been declared");
-                let g_add_call = compiler.builder.build_call(g_add, &[
-                        BasicMetadataValueEnum::StructValue(left.into_struct_value()), 
-                        BasicMetadataValueEnum::StructValue(right.into_struct_value())
-                    ], "g_add_call") // TODO: Declare g_add function in setup ...
+                let g_add_call = compiler
+                    .builder
+                    .build_call(
+                        g_add,
+                        &[
+                            BasicMetadataValueEnum::StructValue(left.into_struct_value()),
+                            BasicMetadataValueEnum::StructValue(right.into_struct_value()),
+                        ],
+                        "g_add_call",
+                    ) // TODO: Declare g_add function in setup ...
                     .expect("Could not perform generic add.");
                 Ok(g_add_call.as_any_value_enum())
             }
             _ => Err(BackendError {
                 message: "Not implemented yet...",
-            })
+            }),
         }
     }
 }
@@ -65,7 +71,7 @@ impl LLVMGenericCodegen for StmtFunctionDef {
             .get_insert_block()
             .expect("Builder isn't mapped to a basic block?");
 
-        let func_name = format!("g_{}", self.name.as_str());
+        let func_name = format!("{}_g", self.name.as_str());
         let any_args: Vec<BasicMetadataTypeEnum> = self
             .args
             .args
@@ -76,7 +82,9 @@ impl LLVMGenericCodegen for StmtFunctionDef {
 
         // Declare function with Any return type
         let func_type = compiler.any_type.fn_type(&any_args, false);
-        let func_def = compiler.module.add_function(func_name.as_str(), func_type, None);
+        let func_def = compiler
+            .module
+            .add_function(func_name.as_str(), func_type, None);
 
         let func_entry = compiler.context.append_basic_block(func_def, "entry");
         compiler.builder.position_at_end(func_entry);
@@ -113,79 +121,15 @@ impl LLVMGenericCodegen for StmtAssign {
                     .value
                     .generic_codegen(compiler)
                     .expect("Failed to compute right side of assignment.");
-
+                // To cast the pointers, we return pointers to all Any structs.
                 let mut sym_table = compiler.sym_table.borrow_mut();
-                let target_ptr;
-                if !sym_table.contains_key(target_name) {
-                    match value.get_type() {
-                        AnyTypeEnum::FloatType(..) => {
-                            target_ptr = compiler
-                                .builder
-                                .build_alloca(compiler.context.f64_type(), target_name)
-                                .expect("Cannot allocate variable {target_name}");
-                        }
-                        AnyTypeEnum::IntType(..) => {
-                            // Booleans get cast to integers, so distinguish between the two...
-                            let itype = value.get_type().into_int_type();
-                            let alloc_type = if itype == compiler.context.i8_type() {
-                                compiler.context.i8_type()
-                            } else {
-                                compiler.context.i64_type()
-                            };
-                            target_ptr = compiler
-                                .builder
-                                .build_alloca(alloc_type, target_name)
-                                .expect("Cannot allocate variable {target_name}");
-                        }
-                        AnyTypeEnum::PointerType(..) => {
-                            // Pointers are usually i8 ? Might wanna double check this
-                            target_ptr = compiler
-                                .builder
-                                .build_alloca(value.into_pointer_value().get_type(), target_name)
-                                .expect("Cannot allocate variable {target_name}");
-                        }
-                        _ => {
-                            return Err(BackendError {
-                                message: "Assignments not implemented for {value.get_type()}",
-                            });
-                        }
-                    }
+                let target_ptr = if !sym_table.contains_key(target_name) {
+                    value.into_pointer_value()
                 } else {
-                    // should only be pointers in the symbol table
-                    target_ptr = sym_table.get(target_name).unwrap().into_pointer_value();
-                }
-                let store;
-
-                match value.get_type() {
-                    AnyTypeEnum::IntType(..) => {
-                        store = compiler
-                            .builder
-                            .build_store(target_ptr, value.into_int_value())
-                            .expect("Could not store variable {target_name}.");
-                    }
-                    AnyTypeEnum::FloatType(..) => {
-                        store = compiler
-                            .builder
-                            .build_store(target_ptr, value.into_float_value())
-                            .expect("Could not store variable {target_name}.");
-                    }
-                    AnyTypeEnum::PointerType(..) => {
-                        // TODO: Check in with this implementation
-                        // like how weird is this to do??
-                        let ptr_address = value.into_pointer_value();
-                        store = compiler
-                            .builder
-                            .build_store(target_ptr, ptr_address)
-                            .expect("Cannot allocate variable {target_name}");
-                    }
-                    _ => {
-                        return Err(BackendError {
-                            message: "Assignments not implemented for {value.get_type()}",
-                        })
-                    }
-                }
+                    sym_table.get(target_name).unwrap().into_pointer_value()
+                };
                 sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
-                return Ok(store.as_any_value_enum());
+                Ok(value.as_any_value_enum())
             }
             _ => Err(BackendError {
                 message: "Left of an assignment must be a variable.",
@@ -281,10 +225,11 @@ impl LLVMGenericCodegen for ExprCall {
             .as_str();
         let function;
         if func_name.eq("print") {
-            function = compiler
-                .module
-                .get_function("printf")
-                .expect("Could not find print function.");
+            let print_any_fn = compiler.module.get_function("print_any");
+            match print_any_fn {
+                Some(f) => function = f,
+                None => function = build_print_any_fn(compiler),
+            }
         } else {
             function = compiler
                 .module
@@ -307,28 +252,17 @@ impl LLVMGenericCodegen for ExprCall {
             .map(|arg| arg.generic_codegen(compiler))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
-        if func_name.eq("print") {
-            return print_fn(compiler, &args);
-        }
-
         let args: Vec<BasicMetadataValueEnum> = args
             .into_iter()
             .filter_map(|val| match val {
-                AnyValueEnum::IntValue(..) => {
-                    Some(BasicMetadataValueEnum::IntValue(val.into_int_value()))
-                }
-                AnyValueEnum::FloatValue(..) => {
-                    Some(BasicMetadataValueEnum::FloatValue(val.into_float_value()))
-                }
                 AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(
                     val.into_pointer_value(),
-                )),
-                AnyValueEnum::StructValue(..) => Some(BasicMetadataValueEnum::StructValue(
-                    val.into_struct_value()
                 )),
                 _ => None,
             })
             .collect();
+
+        println!("{:?}", args);
 
         let call = compiler
             .builder
@@ -350,11 +284,9 @@ impl LLVMGenericCodegen for ExprName {
                 }
                 let sym_table = compiler.sym_table.borrow();
                 if let Some(name_ptr) = sym_table.get(name) {
-                    let load = compiler
-                        .builder
-                        .build_load(name_ptr.into_pointer_value(), name)
-                        .expect("Could not load variable.");
-                    return Ok(load.as_any_value_enum());
+                    // Delay dereferencing the pointer as far as possible
+                    // to avoid bitcast errors
+                    return Ok(name_ptr.as_any_value_enum());
                 }
                 Err(BackendError {
                     message: "Variable {name} is not defined.",
@@ -370,37 +302,26 @@ impl LLVMGenericCodegen for ExprName {
 impl LLVMGenericCodegen for ExprConstant {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         match &self.value {
-            Constant::Float(num) => {
-                let f64_type = compiler.context.f64_type();
-                Ok(f64_type.const_float(*num).as_any_value_enum())
-            }
+            Constant::Float(num) => Ok(num.to_any_type(compiler).as_any_value_enum()),
             Constant::Int(num) => {
-                let i64_type = compiler.context.i64_type();
                 let (sign, digits) = num.to_u64_digits();
                 // For now, let's just support numbers up to i64
-                if digits.len() > 0 {
-                    let int_val = digits[0] as u64;
-                    let is_minus = match sign {
-                        malachite_bigint::Sign::Minus => true,
-                        _ => false,
-                    };
-                    Ok(i64_type.const_int(int_val, is_minus).as_any_value_enum())
+                let i64_num = if !digits.is_empty() {
+                    let value = digits[0] as i64;
+                    match sign {
+                        malachite_bigint::Sign::Minus => -value,
+                        _ => value,
+                    }
                 } else {
-                    Ok(i64_type.const_zero().as_any_value_enum())
-                }
+                    0
+                };
+                Ok(i64_num.to_any_type(compiler).as_any_value_enum())
             }
             Constant::Bool(bool) => {
-                let i8_type = compiler.context.i8_type();
-                let bool_val = u64::from(*bool);
-                Ok(i8_type.const_int(bool_val, false).as_any_value_enum())
+                let bool_val = u64::from(*bool) as i8;
+                Ok(bool_val.to_any_type(compiler).as_any_value_enum())
             }
-            Constant::Str(str) => {
-                let str_ptr = compiler
-                    .builder
-                    .build_global_string_ptr(str, "tmpstr")
-                    .expect("Could not create global string ptr for {str}.");
-                Ok(str_ptr.as_any_value_enum())
-            }
+            // TODO: Add strings back here when we extend Any type
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),

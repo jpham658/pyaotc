@@ -2,6 +2,12 @@ use inkwell::{values::PointerValue, AddressSpace};
 use crate::compiler::Compiler;
 
 pub trait ToAnyType {
+    /**
+     * Any type implementing this trait will be able to create
+     * a generic Any version of itself.
+     * Returns a pointer to the struct representing the target 
+     * value's generic self.
+     */
     fn to_any_type<'a>(&self, compiler: &Compiler<'a>) -> PointerValue<'a>;
 }
 

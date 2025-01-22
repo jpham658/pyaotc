@@ -24,11 +24,8 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-def add(x):
-    return x + 1
-
-add(3 + 2 + 1)
-add(1.0)
+w = 4
+print(w)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
@@ -65,7 +62,7 @@ add(1.0)
                 }
             }
             types_pp(&types);
-            compiler.compile(&ast, &types);
+            compiler.compile_generically(&ast);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);
