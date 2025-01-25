@@ -1,4 +1,4 @@
-use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum};
+use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use malachite_bigint;
 use rustpython_parser::ast::{
@@ -7,10 +7,11 @@ use rustpython_parser::ast::{
 };
 
 use crate::compiler::Compiler;
-use crate::compiler_utils::print_fn::{build_print_any_fn, print_fn};
+use crate::compiler_utils::print_fn::build_print_any_fn;
 use crate::compiler_utils::to_any_type::ToAnyType;
 
 use super::error::{BackendError, IRGenResult};
+use super::generic_ops::g_add::build_g_add;
 
 pub trait LLVMGenericCodegen {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
@@ -26,20 +27,24 @@ impl LLVMGenericCodegen for ExprBinOp {
         match self.op {
             Operator::Add => {
                 // call generic add
-                let g_add = compiler
+                let g_add_fn;
+                let g_add_opt = compiler
                     .module
-                    .get_function("g_add")
-                    .expect("Generic addition function has not been declared");
+                    .get_function("g_add");
+                match g_add_opt {
+                    Some(f) => g_add_fn = f,
+                    None => g_add_fn = build_g_add(compiler) 
+                }
                 let g_add_call = compiler
                     .builder
                     .build_call(
-                        g_add,
+                        g_add_fn,
                         &[
-                            BasicMetadataValueEnum::StructValue(left.into_struct_value()),
-                            BasicMetadataValueEnum::StructValue(right.into_struct_value()),
+                            BasicMetadataValueEnum::PointerValue(left.into_pointer_value()),
+                            BasicMetadataValueEnum::PointerValue(right.into_pointer_value()),
                         ],
                         "g_add_call",
-                    ) // TODO: Declare g_add function in setup ...
+                    )
                     .expect("Could not perform generic add.");
                 Ok(g_add_call.as_any_value_enum())
             }
@@ -261,8 +266,6 @@ impl LLVMGenericCodegen for ExprCall {
                 _ => None,
             })
             .collect();
-
-        println!("{:?}", args);
 
         let call = compiler
             .builder

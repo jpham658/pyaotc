@@ -24,7 +24,9 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-w = 4
+x = 4.0
+print(x)
+w = x + 3.0
 print(w)
 "#;
     let context = Context::create();
@@ -62,6 +64,7 @@ print(w)
                 }
             }
             types_pp(&types);
+            // compiler.compile(&ast, &types);
             compiler.compile_generically(&ast);
         }
         Err(e) => {

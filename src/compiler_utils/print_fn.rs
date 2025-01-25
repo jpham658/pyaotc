@@ -1,7 +1,10 @@
+use crate::codegen::any_class_utils::{
+    any_is_bool, any_is_float, any_is_int, cast_any_to_struct, get_tag, get_value,
+};
 use crate::codegen::error::{BackendError, IRGenResult};
 use crate::compiler::Compiler;
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
-use inkwell::{AddressSpace, IntPredicate};
+use inkwell::AddressSpace;
 
 pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGenResult<'a> {
     let print_f = compiler
@@ -65,9 +68,9 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
  */
 pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::FunctionValue<'a> {
     let main_entry = compiler
-            .builder
-            .get_insert_block()
-            .expect("Builder isn't mapped to a basic block?");
+        .builder
+        .get_insert_block()
+        .expect("Builder isn't mapped to a basic block?");
 
     let print_f = compiler
         .module
@@ -90,25 +93,12 @@ pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::Funct
         .module
         .add_function("print_any", print_any_fn_type, None);
 
-    // Create the entry block
     let entry_block = compiler.context.append_basic_block(function, "entry");
     compiler.builder.position_at_end(entry_block);
 
-    // Retrieve the function parameter (the pointer to the Any struct)
     let any_container = function.get_nth_param(0).unwrap().into_pointer_value();
 
-    let i8_type = compiler.context.i8_type();
-
-    // Get the tag field (index 0)
-    let tag_ptr = compiler
-        .builder
-        .build_struct_gep(any_container, 0, "tag_ptr")
-        .expect("Error: Could not get tag pointer.");
-    let tag_value = compiler
-        .builder
-        .build_load(tag_ptr, "tag")
-        .expect("Error: Could not load tag field.")
-        .into_int_value();
+    let any_tag = get_tag(any_container, compiler);
 
     // Create blocks for the tag cases and a merge block
     let block_match_0 = compiler.context.append_basic_block(function, "match_tag_0");
@@ -119,61 +109,26 @@ pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::Funct
     let block_merge = compiler.context.append_basic_block(function, "merge");
 
     // Compare the tag and branch to the appropriate block
-    let tag_is_0 = compiler
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            tag_value,
-            i8_type.const_int(0, false),
-            "tag_is_0",
-        )
-        .unwrap();
-    let tag_is_1 = compiler
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            tag_value,
-            i8_type.const_int(1, false),
-            "tag_is_1",
-        )
-        .unwrap();
-    let tag_is_2 = compiler
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            tag_value,
-            i8_type.const_int(2, false),
-            "tag_is_2",
-        )
-        .unwrap();
+    let any_is_bool = any_is_bool(compiler, any_tag);
+    let any_is_int = any_is_int(compiler, any_tag);
+    let any_is_float = any_is_float(compiler, any_tag);
 
     let _ = compiler
         .builder
-        .build_conditional_branch(tag_is_0, block_match_0, block_test_1);
+        .build_conditional_branch(any_is_bool, block_match_0, block_test_1);
     let _ = compiler.builder.position_at_end(block_test_1);
     let _ = compiler
         .builder
-        .build_conditional_branch(tag_is_1, block_match_1, block_test_2);
+        .build_conditional_branch(any_is_int, block_match_1, block_test_2);
     let _ = compiler.builder.position_at_end(block_test_2);
     let _ = compiler
         .builder
-        .build_conditional_branch(tag_is_2, block_match_2, block_merge);
+        .build_conditional_branch(any_is_float, block_match_2, block_merge);
 
     // Logic for tag = 0 (i8)
     compiler.builder.position_at_end(block_match_0);
-    let any_as_bool_ptr = compiler.builder
-        .build_bit_cast(any_container, compiler.any_bool_type.ptr_type(AddressSpace::default()), "any_as_bool_ptr")
-        .unwrap()
-        .into_pointer_value();
-    let any_bool_value_ptr = compiler
-        .builder
-        .build_struct_gep(any_as_bool_ptr, 1, "any_bool_value_ptr")
-        .expect("Error: Could not get value pointer.");
-    let any_bool_value = compiler
-        .builder
-        .build_load(any_bool_value_ptr, "any_bool_value")
-        .expect("Error: Could not load value as i8.")
-        .into_int_value();
+    let any_as_bool_ptr = cast_any_to_struct(any_container, compiler.any_bool_type, compiler);
+    let any_bool_value = get_value(any_as_bool_ptr, compiler).into_int_value();
     let _ = compiler
         .builder
         .build_call(
@@ -189,24 +144,8 @@ pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::Funct
 
     // Logic for tag = 1 (i64)
     compiler.builder.position_at_end(block_match_1);
-    let any_i64_ptr = compiler
-        .builder
-        .build_bit_cast(
-            any_container,
-            compiler.any_int_type.ptr_type(AddressSpace::default()),
-            "any_i64_ptr",
-        )
-        .unwrap()
-        .into_pointer_value();
-    let any_i64_value_ptr = compiler
-        .builder
-        .build_struct_gep(any_i64_ptr, 1, "any_i64_value_ptr")
-        .expect("Error: Could not load value as i64.");
-    let any_i64_value = compiler
-        .builder
-        .build_load(any_i64_value_ptr, "any_i64_value")
-        .expect("Error: Could not load value as i64.")
-        .into_int_value();
+    let any_i64_ptr = cast_any_to_struct(any_container, compiler.any_int_type, compiler);
+    let any_i64_value = get_value(any_i64_ptr, compiler).into_int_value();
     let _ = compiler
         .builder
         .build_call(
@@ -223,24 +162,8 @@ pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::Funct
 
     // Logic for tag = 2 (f64)
     compiler.builder.position_at_end(block_match_2);
-    let any_f64_ptr = compiler
-        .builder
-        .build_bit_cast(
-            any_container,
-            compiler.any_float_type.ptr_type(AddressSpace::default()),
-            "any_f64_ptr",
-        )
-        .unwrap()
-        .into_pointer_value();
-    let any_f64_value_ptr = compiler
-        .builder
-        .build_struct_gep(any_f64_ptr, 1, "any_f64_value_ptr")
-        .expect("Error: Could not load value as f64.");
-    let any_f64_value = compiler
-        .builder
-        .build_load(any_f64_value_ptr, "any_f64_value")
-        .expect("Error: Could not load value as f64.")
-        .into_float_value();
+    let any_f64_ptr = cast_any_to_struct(any_container, compiler.any_float_type, compiler);
+    let any_f64_value = get_value(any_f64_ptr, compiler).into_float_value();
     let _ = compiler
         .builder
         .build_call(

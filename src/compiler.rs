@@ -131,10 +131,17 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn setup_compiler(&self) {
+        // Declare printf and malloc
         let printf_param_types = BasicMetadataTypeEnum::PointerType(
             self.context.i8_type().ptr_type(AddressSpace::default()),
         );
         let printf_type = self.context.i32_type().fn_type(&[printf_param_types], true);
         let _ = self.module.add_function("printf", printf_type, None);
+        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let malloc_param_types = BasicMetadataTypeEnum::IntType(
+            self.context.i64_type(),
+        );
+        let malloc_type = i8_ptr_type.fn_type(&[malloc_param_types], false);
+        let _ = self.module.add_function("malloc", malloc_type, None);
     }
 }
