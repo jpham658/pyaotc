@@ -17,6 +17,7 @@ pub struct Compiler<'ctx> {
     pub builder: Builder<'ctx>,
     pub module: Module<'ctx>,
     pub sym_table: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
+    pub sym_table_as_any: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
     pub func_args: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
     pub any_type: StructType<'ctx>,
     pub any_bool_type: StructType<'ctx>,  // Denoted with 0
@@ -42,6 +43,7 @@ impl<'ctx> Compiler<'ctx> {
             builder,
             module,
             sym_table: RefCell::new(HashMap::new()),
+            sym_table_as_any: RefCell::new(HashMap::new()),
             func_args: RefCell::new(HashMap::new()),
             any_type,
             any_bool_type,

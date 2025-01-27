@@ -1,5 +1,9 @@
+use std::collections::HashMap;
+use std::fmt::format;
+
 use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
+use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
@@ -60,6 +64,13 @@ impl LLVMGenericCodegen for Stmt {
         match self {
             Stmt::Expr(StmtExpr { value, .. }) => value.generic_codegen(compiler),
             Stmt::Assign(assign) => assign.generic_codegen(compiler),
+            Stmt::Return(return_stmt) => match &return_stmt.value {
+                None => Err(BackendError {
+                    message: "Not implemented return by itself yet",
+                }),
+                Some(expr) => expr.generic_codegen(compiler),
+            },
+            Stmt::FunctionDef(funcdef) => funcdef.generic_codegen(compiler),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
@@ -77,19 +88,41 @@ impl LLVMGenericCodegen for StmtFunctionDef {
             .expect("Builder isn't mapped to a basic block?");
 
         let func_name = format!("{}_g", self.name.as_str());
+        let any_type_ptr = compiler.any_type.ptr_type(AddressSpace::default());
         let any_args: Vec<BasicMetadataTypeEnum> = self
             .args
             .args
             .clone()
             .into_iter()
-            .map(|_a| compiler.any_type.into())
+            .map(|_a| any_type_ptr.into())
             .collect();
 
         // Declare function with Any return type
-        let func_type = compiler.any_type.fn_type(&any_args, false);
+        let func_type = any_type_ptr.fn_type(&any_args, false);
         let func_def = compiler
             .module
             .add_function(func_name.as_str(), func_type, None);
+
+        // make map for argument values
+        let args = self
+            .args
+            .args
+            .clone()
+            .into_iter()
+            .map(|arg| arg.def.arg.as_str().to_string())
+            .collect::<Vec<_>>();
+        let arg_map = args
+            .into_iter()
+            .zip(func_def.get_param_iter())
+            .collect::<HashMap<_, _>>()
+            .into_iter()
+            .map(|(k, v)| (k.clone(), v.as_any_value_enum()))
+            .collect::<HashMap<_, _>>();
+
+        {
+            let mut func_args = compiler.func_args.borrow_mut();
+            func_args.extend(arg_map.clone());
+        }
 
         let func_entry = compiler.context.append_basic_block(func_def, "entry");
         compiler.builder.position_at_end(func_entry);
@@ -109,11 +142,17 @@ impl LLVMGenericCodegen for StmtFunctionDef {
             }
         }
 
-        compiler.builder.position_at_end(main_entry);
+        let _ = compiler
+            .builder
+            .build_return(Some(&return_stmts[0].into_pointer_value()));
 
-        Err(BackendError {
-            message: "Not implemented yet...",
-        })
+        compiler.builder.position_at_end(main_entry);
+        {
+            let mut func_args = compiler.func_args.borrow_mut();
+            func_args.clear();
+        }
+
+        Ok(func_def.as_any_value_enum())
     }
 }
 
@@ -220,7 +259,6 @@ impl LLVMGenericCodegen for ExprBoolOp {
 }
 
 impl LLVMGenericCodegen for ExprCall {
-    // TODO: Refactor to consider general and specific types.
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         let func_name = self
             .func
@@ -236,9 +274,10 @@ impl LLVMGenericCodegen for ExprCall {
                 None => function = build_print_any_fn(compiler),
             }
         } else {
+            let generic_fn_name = format!("{}_g", func_name);
             function = compiler
                 .module
-                .get_function(func_name)
+                .get_function(&generic_fn_name.as_str())
                 .expect("Could not find function.");
         }
 

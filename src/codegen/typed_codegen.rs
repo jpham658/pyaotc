@@ -1,6 +1,5 @@
-use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue};
-use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
@@ -10,11 +9,12 @@ use rustpython_parser::ast::{
 use std::collections::HashMap;
 
 use crate::compiler_utils::print_fn::print_fn;
-use crate::compiler_utils::to_any_type::ToAnyType;
+use crate::compiler_utils::set_symtable_ptrs::set_variable_pointers_in_symbol_table;
 use crate::type_inference::{ConcreteValue, Scheme, Type};
 use crate::compiler::Compiler;
 
 use super::error::{BackendError, IRGenResult};
+use super::generic_codegen::LLVMGenericCodegen;
 
 pub trait LLVMTypedCodegen {
     fn typed_codegen<'ctx: 'ir, 'ir>(
@@ -256,6 +256,16 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             func_args.clear();
         }
 
+        // Build generic function body
+        let sym_table_as_any= compiler.sym_table_as_any.borrow().clone();
+        let original_sym_table = compiler.sym_table.borrow().clone();
+        {
+            set_variable_pointers_in_symbol_table(compiler, &sym_table_as_any);
+        }
+            let _ = self.generic_codegen(compiler);
+        {
+            set_variable_pointers_in_symbol_table(compiler, &original_sym_table);
+        }
         Ok(func_def.as_any_value_enum())
     }
 }
@@ -265,15 +275,22 @@ impl LLVMTypedCodegen for StmtAssign {
         match &self.targets[0] {
             Expr::Name(exprname) => {
                 let target_name = exprname.id.as_str();
-                let value = &self
+                let typed_value = &self
                     .value
                     .typed_codegen(compiler, types)
-                    .expect("Failed to compute right side of assignment.");
+                    .expect("Failed to compute right side of assignment with types.");
 
+                let generic_value_ptr = &self
+                    .value
+                    .generic_codegen(compiler)
+                    .expect("Failed to compute right side of assignment generically.");
+                
                 let mut sym_table = compiler.sym_table.borrow_mut();
+                let mut sym_table_as_any = compiler.sym_table_as_any.borrow_mut();
+                
                 let target_ptr;
                 if !sym_table.contains_key(target_name) {
-                    match value.get_type() {
+                    match typed_value.get_type() {
                         AnyTypeEnum::FloatType(..) => {
                             target_ptr = compiler
                                 .builder
@@ -282,7 +299,7 @@ impl LLVMTypedCodegen for StmtAssign {
                         }
                         AnyTypeEnum::IntType(..) => {
                             // Booleans get cast to integers, so distinguish between the two...
-                            let itype = value.get_type().into_int_type();
+                            let itype = typed_value.get_type().into_int_type();
                             let alloc_type = if itype == compiler.context.i8_type() {
                                 compiler.context.i8_type()
                             } else {
@@ -297,7 +314,7 @@ impl LLVMTypedCodegen for StmtAssign {
                             // Pointers are usually i8 ? Might wanna double check this
                             target_ptr = compiler
                                 .builder
-                                .build_alloca(value.into_pointer_value().get_type(), target_name)
+                                .build_alloca(typed_value.into_pointer_value().get_type(), target_name)
                                 .expect("Cannot allocate variable {target_name}");
                         }
                         _ => {
@@ -312,26 +329,25 @@ impl LLVMTypedCodegen for StmtAssign {
                 }
                 let store;
 
-                match value.get_type() {
+                match typed_value.get_type() {
                     AnyTypeEnum::IntType(..) => {
                         store = compiler
                             .builder
-                            .build_store(target_ptr, value.into_int_value())
+                            .build_store(target_ptr, typed_value.into_int_value())
                             .expect("Could not store variable {target_name}.");
                     }
                     AnyTypeEnum::FloatType(..) => {
                         store = compiler
                             .builder
-                            .build_store(target_ptr, value.into_float_value())
+                            .build_store(target_ptr, typed_value.into_float_value())
                             .expect("Could not store variable {target_name}.");
                     }
                     AnyTypeEnum::PointerType(..) => {
                         // TODO: Check in with this implementation
                         // like how weird is this to do??
-                        let ptr_address = value.into_pointer_value();
                         store = compiler
                             .builder
-                            .build_store(target_ptr, ptr_address)
+                            .build_store(target_ptr, typed_value.into_pointer_value())
                             .expect("Cannot allocate variable {target_name}");
                     }
                     _ => {
@@ -341,6 +357,8 @@ impl LLVMTypedCodegen for StmtAssign {
                     }
                 }
                 sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
+                sym_table_as_any.insert(target_name.to_string(), generic_value_ptr.as_any_value_enum());
+
                 return Ok(store.as_any_value_enum());
             }
             _ => Err(BackendError {
@@ -462,6 +480,26 @@ impl LLVMTypedCodegen for ExprCall {
             .iter()
             .map(|arg| arg.typed_codegen(compiler, types))
             .collect::<Result<Vec<_>, BackendError>>()?;
+
+        // check types of args
+        let fn_arg_types = function.get_type().get_param_types();
+        for i in 0..arg_count {
+            let expected_type = fn_arg_types[i as usize].as_any_type_enum();
+            if expected_type != args[i as usize].get_type() {
+                // Update sym table with generic versions of variables
+                let sym_table_as_any = compiler.sym_table_as_any.borrow().clone();
+                let original_sym_table = compiler.sym_table.borrow().clone();
+                let fn_call_res;
+                {
+                    set_variable_pointers_in_symbol_table(compiler, &sym_table_as_any);
+                }
+                    fn_call_res = self.generic_codegen(compiler);
+                {
+                    set_variable_pointers_in_symbol_table(compiler, &original_sym_table);
+                }
+                return fn_call_res
+            }
+        }
 
         if func_name.eq("print") {
             return print_fn(compiler, &args);
