@@ -77,7 +77,7 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_return(Some(&i32_type.const_int(0, false)));
 
-        self.dump_module();
+        // self.dump_module();
 
         let output = Path::new("outputs/output.ll");
 

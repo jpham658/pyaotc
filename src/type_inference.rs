@@ -61,6 +61,8 @@ pub enum Type {
     FuncType(FuncTypeValue),
     Scheme(Scheme),
     Undefined,
+    Sequence(Box<Type>),
+    Set(Box<Type>),
 }
 
 /**
@@ -210,7 +212,7 @@ impl TypeInferrer {
             {
                 match return_stmt {
                     None => return_type = (Sub::new(), Type::ConcreteType(ConcreteValue::None)),
-                    Some(expr) => match self.infer_expression(&extended_env, expr) {
+                    Some(expr) => match self.infer_expression(&extended_env, &*expr) {
                         Ok(expr_type) => return_type = expr_type,
                         Err(e) => return Err(e),
                     },
@@ -226,28 +228,28 @@ impl TypeInferrer {
         }
 
         let func_type = if arg_types.len() == 0 {
-                let return_type_clone = return_type.clone();
-                (
-                    Sub::new(),
-                    Type::FuncType(FuncTypeValue {
-                        input: Box::new(Type::ConcreteType(ConcreteValue::None)),
-                        output: Box::new(return_type_clone.1),
-                    }),
-                )
-            } else {
-                arg_types
-                    .into_iter()
-                    .rev()
-                    .fold(return_type.clone(), |acc, arg_type| {
-                        // Compose the substitution and create the function type
-                        let result_subs = compose_subs(&subs, &acc.0);
-                        let func_type = Type::FuncType(FuncTypeValue {
-                            input: Box::new(arg_type),
-                            output: Box::new(acc.1),
-                        });
-                        (result_subs, func_type)
-                    })
-            };
+            let return_type_clone = return_type.clone();
+            (
+                Sub::new(),
+                Type::FuncType(FuncTypeValue {
+                    input: Box::new(Type::ConcreteType(ConcreteValue::None)),
+                    output: Box::new(return_type_clone.1),
+                }),
+            )
+        } else {
+            arg_types
+                .into_iter()
+                .rev()
+                .fold(return_type.clone(), |acc, arg_type| {
+                    // Compose the substitution and create the function type
+                    let result_subs = compose_subs(&subs, &acc.0);
+                    let func_type = Type::FuncType(FuncTypeValue {
+                        input: Box::new(arg_type),
+                        output: Box::new(acc.1),
+                    });
+                    (result_subs, func_type)
+                })
+        };
 
         let resultant_sub = func_type.0.clone();
         Ok((func_type.0, apply(&resultant_sub, &func_type.1)))
@@ -320,6 +322,9 @@ impl TypeInferrer {
                 }
             }
             Expr::Call(call) => self.infer_call(env, call),
+            Expr::Compare(..) => {
+                Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Bool)))
+            }
             _ => Err(InferenceError {
                 message: format!(
                     "Inferrence not implemented for expression {:?}.",

@@ -24,10 +24,7 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-def add(x):
-    return x + 1
-w = add(3.0)
-print(w)
+y = 1 <= 2 <= 1
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);

@@ -38,28 +38,10 @@ pub fn build_g_add<'a>(compiler: &Compiler<'a>) -> FunctionValue<'a> {
     let right_is_int = any_is_int(compiler, right_tag_value);
     let right_is_float = any_is_float(compiler, right_tag_value);
 
-    let malloc_fn = compiler
-        .module
-        .get_function("malloc")
-        .expect("malloc has not been declared.");
-    let malloc_call = compiler
-        .builder
-        .build_call(malloc_fn, &[
-            BasicMetadataValueEnum::IntValue(
-                compiler.context.i64_type().const_int(16, false)
-            )
-        ], "malloc_call")
-        .expect("Could not allocate memory for Any struct on heap.")
-        .try_as_basic_value()
-        .left()
-        .unwrap()
-        .into_pointer_value();
-
     let sum_ptr = compiler
         .builder
-        .build_bit_cast(malloc_call, compiler.any_type.ptr_type(AddressSpace::default()), "sum_ptr")
-        .expect("Could not convert malloc to Any type pointer.")
-        .into_pointer_value();
+        .build_malloc(compiler.any_type, "malloc")
+        .expect("Could not allocate heap memory.");
 
     // Conditions
     // In form [left_type]_[right_type]

@@ -7,13 +7,14 @@ use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
-    ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
+    ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef, UnaryOp,
 };
 
 use crate::compiler::Compiler;
 use crate::compiler_utils::print_fn::build_print_any_fn;
 use crate::compiler_utils::to_any_type::ToAnyType;
 
+use super::any_class_utils::{get_tag, get_value};
 use super::error::{BackendError, IRGenResult};
 use super::generic_ops::g_add::build_g_add;
 
@@ -142,9 +143,13 @@ impl LLVMGenericCodegen for StmtFunctionDef {
             }
         }
 
-        let _ = compiler
-            .builder
-            .build_return(Some(&return_stmts[0].into_pointer_value()));
+        if return_stmts.is_empty() {
+            let _ = compiler.builder.build_return(None);
+        } else {
+            let _ = compiler
+                .builder
+                .build_return(Some(&return_stmts[0].into_pointer_value()));
+        }
 
         compiler.builder.position_at_end(main_entry);
         {
@@ -216,11 +221,37 @@ impl LLVMGenericCodegen for ExprIfExp {
     }
 }
 
+// Doesn't work rn...
+// TODO: Fix
 impl LLVMGenericCodegen for ExprUnaryOp {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        Err(BackendError {
-            message: "Not implemented yet...",
-        })
+        let i8_type = compiler.context.i8_type();
+        let true_as_u64 = u64::from(true);
+        let false_as_u64 = u64::from(false);
+        let truth_val = i8_type.const_int(true_as_u64, false);
+        let false_val = i8_type.const_int(false_as_u64, false);
+        
+        let i64_type = compiler.context.i64_type();
+        let zero = i64_type.const_zero();
+        
+        let operand_ptr = self.operand.generic_codegen(compiler)?.into_pointer_value();
+        let operand_tag = get_tag(operand_ptr, compiler);
+        let operand_value = get_value(operand_ptr, compiler);
+
+        match self.op {
+            UnaryOp::Not => {
+                Ok(operand_ptr.as_any_value_enum()) 
+            }
+            UnaryOp::UAdd => {
+                Ok(operand_ptr.as_any_value_enum())
+            }
+            UnaryOp::USub => {
+                Ok(operand_ptr.as_any_value_enum())
+            }
+            _ => {
+                Err(BackendError{ message: "Invalid operand for given unary op." })
+            }
+        }
     }
 }
 

@@ -20,8 +20,13 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                 // Handle boolean and integer values
                 let i8_type = compiler.context.i8_type();
                 if i.get_type() == i8_type {
-                    // TODO: Get this to print True for 1, False for 0
-                    string_format.push_str("%d ");
+                    let truth_val = i8_type.const_int(u64::from(true), false);
+                    println!("{:?}", i);
+                    if *i == truth_val {
+                        string_format.push_str("True ");
+                    } else {
+                        string_format.push_str("False ");
+                    }
                     llvm_args.push(BasicMetadataValueEnum::IntValue(*i));
                 } else {
                     string_format.push_str("%d ");
@@ -80,6 +85,17 @@ pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::Funct
     let void_type = compiler.context.void_type();
     let print_any_fn_type = void_type.fn_type(&[any_type_ptr.into()], false);
 
+    let true_as_u64 = u64::from(true);
+    let truth_val = compiler.context.i8_type().const_int(true_as_u64, false);
+
+    let true_format_str = compiler
+        .builder
+        .build_global_string_ptr("True\n", "true_format_str")
+        .expect("Error when creating string format.");
+    let false_format_str = compiler
+        .builder
+        .build_global_string_ptr("False\n", "false_format_str")
+        .expect("Error when creating string format.");
     let int_format_str = compiler
         .builder
         .build_global_string_ptr("%d\n", "int_format_str")
@@ -129,17 +145,29 @@ pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::Funct
     compiler.builder.position_at_end(block_match_0);
     let any_as_bool_ptr = cast_any_to_struct(any_container, compiler.any_bool_type, compiler);
     let any_bool_value = get_value(any_as_bool_ptr, compiler).into_int_value();
-    let _ = compiler
+    if any_bool_value == truth_val {
+        let _ = compiler
         .builder
         .build_call(
             print_f,
             &[
-                int_format_str.as_pointer_value().into(),
-                BasicMetadataValueEnum::IntValue(any_bool_value),
+                true_format_str.as_pointer_value().into(),
             ],
             "print_call",
         )
         .expect("Could not call printf.");
+    } else {
+        let _ = compiler
+        .builder
+        .build_call(
+            print_f,
+            &[
+                false_format_str.as_pointer_value().into(),
+            ],
+            "print_call",
+        )
+        .expect("Could not call printf.");
+    }
     let _ = compiler.builder.build_unconditional_branch(block_merge);
 
     // Logic for tag = 1 (i64)

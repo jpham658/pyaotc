@@ -2,16 +2,18 @@ use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue};
 use malachite_bigint;
 use rustpython_parser::ast::{
-    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
-    ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
+    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
+    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr,
+    StmtFunctionDef, UnaryOp,
 };
 
 use std::collections::HashMap;
 
+use crate::compiler::Compiler;
+use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
 use crate::compiler_utils::set_symtable_ptrs::set_variable_pointers_in_symbol_table;
 use crate::type_inference::{ConcreteValue, Scheme, Type};
-use crate::compiler::Compiler;
 
 use super::error::{BackendError, IRGenResult};
 use super::generic_codegen::LLVMGenericCodegen;
@@ -208,6 +210,9 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                     .builder
                     .build_return(Some(&return_stmts[0].into_int_value()));
             }
+            Type::ConcreteType(ConcreteValue::None) => {
+                let _ = compiler.builder.build_return(None);
+            }
             Type::ConcreteType(ConcreteValue::Str) => {
                 let _ = compiler
                     .builder
@@ -236,7 +241,6 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                         .build_return(Some(&return_stmts[0].into_pointer_value()));
                 }
                 _ => {
-                    println!("{:?}", return_type);
                     return Err(BackendError {
                         message: "Not a valid function return type after visiting scheme.",
                     });
@@ -257,12 +261,12 @@ impl LLVMTypedCodegen for StmtFunctionDef {
         }
 
         // Build generic function body
-        let sym_table_as_any= compiler.sym_table_as_any.borrow().clone();
+        let sym_table_as_any = compiler.sym_table_as_any.borrow().clone();
         let original_sym_table = compiler.sym_table.borrow().clone();
         {
             set_variable_pointers_in_symbol_table(compiler, &sym_table_as_any);
         }
-            let _ = self.generic_codegen(compiler);
+        let _ = self.generic_codegen(compiler);
         {
             set_variable_pointers_in_symbol_table(compiler, &original_sym_table);
         }
@@ -271,7 +275,11 @@ impl LLVMTypedCodegen for StmtFunctionDef {
 }
 
 impl LLVMTypedCodegen for StmtAssign {
-    fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
         match &self.targets[0] {
             Expr::Name(exprname) => {
                 let target_name = exprname.id.as_str();
@@ -284,10 +292,10 @@ impl LLVMTypedCodegen for StmtAssign {
                     .value
                     .generic_codegen(compiler)
                     .expect("Failed to compute right side of assignment generically.");
-                
+
                 let mut sym_table = compiler.sym_table.borrow_mut();
                 let mut sym_table_as_any = compiler.sym_table_as_any.borrow_mut();
-                
+
                 let target_ptr;
                 if !sym_table.contains_key(target_name) {
                     match typed_value.get_type() {
@@ -314,7 +322,10 @@ impl LLVMTypedCodegen for StmtAssign {
                             // Pointers are usually i8 ? Might wanna double check this
                             target_ptr = compiler
                                 .builder
-                                .build_alloca(typed_value.into_pointer_value().get_type(), target_name)
+                                .build_alloca(
+                                    typed_value.into_pointer_value().get_type(),
+                                    target_name,
+                                )
                                 .expect("Cannot allocate variable {target_name}");
                         }
                         _ => {
@@ -357,7 +368,10 @@ impl LLVMTypedCodegen for StmtAssign {
                     }
                 }
                 sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
-                sym_table_as_any.insert(target_name.to_string(), generic_value_ptr.as_any_value_enum());
+                sym_table_as_any.insert(
+                    target_name.to_string(),
+                    generic_value_ptr.as_any_value_enum(),
+                );
 
                 return Ok(store.as_any_value_enum());
             }
@@ -369,13 +383,18 @@ impl LLVMTypedCodegen for StmtAssign {
 }
 
 impl LLVMTypedCodegen for Expr {
-    fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
         match self {
             Expr::BinOp(binop) => binop.typed_codegen(compiler, types),
             Expr::Constant(constant) => constant.typed_codegen(compiler, types),
             Expr::Name(name) => name.typed_codegen(compiler, types),
             Expr::Call(call) => call.typed_codegen(compiler, types),
             Expr::BoolOp(boolop) => boolop.typed_codegen(compiler, types),
+            Expr::Compare(comp) => comp.typed_codegen(compiler, types),
             Expr::UnaryOp(unop) => unop.typed_codegen(compiler, types),
             Expr::IfExp(ifexp) => ifexp.typed_codegen(compiler, types),
             Expr::List(list) => list.typed_codegen(compiler, types),
@@ -387,31 +406,193 @@ impl LLVMTypedCodegen for Expr {
 }
 
 impl LLVMTypedCodegen for ExprList {
-        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
         Err(BackendError {
-            message: "Not implemented yet...",
+            message: "List not implemented yet...",
         })
     }
 }
 
 impl LLVMTypedCodegen for ExprIfExp {
-        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
         Err(BackendError {
-            message: "Not implemented yet...",
+            message: "IfExp not implemented yet...",
         })
+    }
+}
+
+impl LLVMTypedCodegen for ExprCompare {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
+        let mut left = self.left.typed_codegen(compiler, types)?;
+        let comparators = self
+            .comparators
+            .clone()
+            .into_iter()
+            .map(|comp| {
+                comp.typed_codegen(compiler, types)
+                    .expect("Could not compile comparator.")
+            })
+            .collect::<Vec<_>>();
+        let ops = self.ops.clone();
+
+        let op_and_comp = ops
+            .into_iter()
+            .zip(comparators.into_iter())
+            .collect::<Vec<(_, _)>>();
+        let mut conditions = Vec::new();
+
+        if left.is_vector_value() {
+            return Err(BackendError {
+                message: "Compare not implemented for list yet.",
+            });
+        }
+
+        for (op, comp) in op_and_comp {
+            println!("{:?}", comp.get_type());
+            if comp.is_vector_value() {
+                return Err(BackendError {
+                    message: "Invalid type for right compare value.",
+                });
+            }
+            let new_comp = if left.is_float_value() && !comp.is_float_value() {
+                compiler
+                    .builder
+                    .build_signed_int_to_float(
+                        comp.into_int_value(),
+                        compiler.context.f64_type(),
+                        "",
+                    )
+                    .unwrap()
+                    .as_any_value_enum()
+            } else {
+                comp
+            };
+            let llvm_comp = if left.is_float_value() {
+                let float_predicate = get_float_predicate(op);
+                compiler.builder.build_float_compare(
+                    float_predicate,
+                    left.into_float_value(),
+                    new_comp.into_float_value(),
+                    "",
+                )
+            } else if left.is_int_value() {
+                let int_predicate = get_int_predicate(op);
+                compiler.builder.build_int_compare(
+                    int_predicate,
+                    left.into_int_value(),
+                    new_comp.into_int_value(),
+                    "",
+                )
+            } else {
+                return Err(BackendError {
+                    message: "Compare not implemented for sequences and sets yet.",
+                });
+            }
+            .expect("Could not compile comparator.");
+            conditions.push(llvm_comp);
+            left = new_comp;
+        }
+
+        let mut composite_comp = conditions[0];
+        for cond in conditions {
+            composite_comp = compiler
+                .builder
+                .build_and(composite_comp, cond, "")
+                .expect("Could not build 'and' for compare.");
+        }
+        composite_comp = compiler
+            .builder
+            .build_int_cast_sign_flag(composite_comp, compiler.context.i8_type(), false, "")
+            .unwrap();
+        Ok(composite_comp.as_any_value_enum())
     }
 }
 
 impl LLVMTypedCodegen for ExprUnaryOp {
-        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
-        Err(BackendError {
-            message: "Not implemented yet...",
-        })
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
+        let i8_type = compiler.context.i8_type();
+        let true_as_u64 = u64::from(true);
+        let false_as_u64 = u64::from(false);
+        let truth_val = i8_type.const_int(true_as_u64, false);
+        let false_val = i8_type.const_int(false_as_u64, false);
+
+        let i64_type = compiler.context.i64_type();
+        let zero = i64_type.const_zero();
+
+        let operand = self.operand.typed_codegen(compiler, types)?;
+
+        match (self.op, operand) {
+            (UnaryOp::Not, AnyValueEnum::IntValue(i)) => {
+                // TODO: Extend for sequence, set, and string types...
+                if i == false_val {
+                    Ok(truth_val.as_any_value_enum())
+                } else if i == truth_val {
+                    Ok(false_val.as_any_value_enum())
+                } else {
+                    // i64 type
+                    if i == zero {
+                        Ok(truth_val.as_any_value_enum())
+                    } else {
+                        Ok(false_val.as_any_value_enum())
+                    }
+                }
+            }
+            (UnaryOp::USub, AnyValueEnum::IntValue(i)) => {
+                if i == false_val {
+                    Ok(zero.as_any_value_enum())
+                } else if i == truth_val {
+                    let one = i64_type.const_int(1, false);
+                    let minus = compiler
+                        .builder
+                        .build_int_nsw_neg(one, "")
+                        .expect("Could not build negation.");
+                    Ok(minus.as_any_value_enum())
+                } else {
+                    let minus = compiler
+                        .builder
+                        .build_int_nsw_neg(operand.into_int_value(), "")
+                        .expect("Could not build negation.");
+                    Ok(minus.as_any_value_enum())
+                }
+            }
+            (UnaryOp::USub, AnyValueEnum::FloatValue(..)) => {
+                let minus = compiler
+                    .builder
+                    .build_float_neg(operand.into_float_value(), "")
+                    .expect("Could not build negation.");
+                Ok(minus.as_any_value_enum())
+            }
+            (UnaryOp::UAdd, AnyValueEnum::IntValue(i)) => Ok(i.as_any_value_enum()),
+            (UnaryOp::UAdd, AnyValueEnum::FloatValue(f)) => Ok(f.as_any_value_enum()),
+            _ => Err(BackendError {
+                message: "Invalid operand for given unary op.",
+            }),
+        }
     }
 }
 
 impl LLVMTypedCodegen for ExprBoolOp {
-        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
         let values = self
             .values
             .clone()
@@ -446,7 +627,11 @@ impl LLVMTypedCodegen for ExprBoolOp {
 
 impl LLVMTypedCodegen for ExprCall {
     // TODO: Refactor to consider general and specific types.
-        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
         let func_name = self
             .func
             .as_name_expr()
@@ -481,6 +666,10 @@ impl LLVMTypedCodegen for ExprCall {
             .map(|arg| arg.typed_codegen(compiler, types))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
+        if func_name.eq("print") {
+            return print_fn(compiler, &args);
+        }
+
         // check types of args
         let fn_arg_types = function.get_type().get_param_types();
         for i in 0..arg_count {
@@ -493,16 +682,12 @@ impl LLVMTypedCodegen for ExprCall {
                 {
                     set_variable_pointers_in_symbol_table(compiler, &sym_table_as_any);
                 }
-                    fn_call_res = self.generic_codegen(compiler);
+                fn_call_res = self.generic_codegen(compiler);
                 {
                     set_variable_pointers_in_symbol_table(compiler, &original_sym_table);
                 }
-                return fn_call_res
+                return fn_call_res;
             }
-        }
-
-        if func_name.eq("print") {
-            return print_fn(compiler, &args);
         }
 
         let args: Vec<BasicMetadataValueEnum> = args
@@ -517,9 +702,9 @@ impl LLVMTypedCodegen for ExprCall {
                 AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(
                     val.into_pointer_value(),
                 )),
-                AnyValueEnum::StructValue(..) => Some(BasicMetadataValueEnum::StructValue(
-                    val.into_struct_value()
-                )),
+                AnyValueEnum::StructValue(..) => {
+                    Some(BasicMetadataValueEnum::StructValue(val.into_struct_value()))
+                }
                 _ => None,
             })
             .collect();
@@ -534,7 +719,11 @@ impl LLVMTypedCodegen for ExprCall {
 }
 
 impl LLVMTypedCodegen for ExprName {
-        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
                 let name = self.id.as_str();
@@ -562,7 +751,11 @@ impl LLVMTypedCodegen for ExprName {
 }
 
 impl LLVMTypedCodegen for ExprConstant {
-        fn typed_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>, types: &HashMap<String, Type>) -> IRGenResult<'ir> {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
         match &self.value {
             Constant::Float(num) => {
                 let f64_type = compiler.context.f64_type();
@@ -586,6 +779,10 @@ impl LLVMTypedCodegen for ExprConstant {
             Constant::Bool(bool) => {
                 let i8_type = compiler.context.i8_type();
                 let bool_val = u64::from(*bool);
+                println!(
+                    "{:?}",
+                    i8_type.const_int(bool_val, false).as_any_value_enum()
+                );
                 Ok(i8_type.const_int(bool_val, false).as_any_value_enum())
             }
             Constant::Str(str) => {
