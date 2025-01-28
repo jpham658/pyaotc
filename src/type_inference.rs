@@ -5,7 +5,7 @@ use std::{
 };
 
 use rustpython_parser::ast::{
-    Constant, Expr, ExprCall, ExprConstant, Stmt, StmtExpr, StmtFunctionDef, StmtReturn,
+    located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, Stmt, StmtExpr, StmtFunctionDef, StmtReturn
 };
 
 //  ====================================================
@@ -322,8 +322,13 @@ impl TypeInferrer {
                 }
             }
             Expr::Call(call) => self.infer_call(env, call),
-            Expr::Compare(..) => {
-                Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Bool)))
+            Expr::BoolOp(..) | Expr::Compare(..) => Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Bool))),
+            Expr::UnaryOp(uop) => {
+                let inferred_type = match uop.op {
+                    UnaryOp::UAdd | UnaryOp::USub | UnaryOp::Invert => Type::ConcreteType(ConcreteValue::Int),
+                    UnaryOp::Not => Type::ConcreteType(ConcreteValue::Bool)
+                };
+                Ok((Sub::new(), inferred_type))
             }
             _ => Err(InferenceError {
                 message: format!(
