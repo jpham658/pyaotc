@@ -1,5 +1,6 @@
 use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue};
+use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
@@ -15,6 +16,7 @@ use crate::compiler_utils::print_fn::print_fn;
 use crate::compiler_utils::set_symtable_ptrs::set_variable_pointers_in_symbol_table;
 use crate::type_inference::{ConcreteValue, Scheme, Type};
 
+use super::any_class_utils::{get_tag, get_value};
 use super::error::{BackendError, IRGenResult};
 use super::generic_codegen::LLVMGenericCodegen;
 
@@ -97,7 +99,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             }
         }
 
-        let llvm_arg_types: Vec<BasicMetadataTypeEnum> = arg_types
+        let llvm_arg_types: Vec<BasicMetadataTypeEnum<'_>> = arg_types
             .into_iter()
             .map(|arg_type| {
                 match arg_type {
@@ -318,8 +320,19 @@ impl LLVMTypedCodegen for StmtAssign {
                                 .build_alloca(alloc_type, target_name)
                                 .expect("Cannot allocate variable {target_name}");
                         }
-                        AnyTypeEnum::PointerType(..) => {
+                        AnyTypeEnum::PointerType(ptr) => {
                             // Pointers are usually i8 ? Might wanna double check this
+
+                            //TODO: Define helper function that allocates memory for the given
+                            // Any type - to store value
+                            // let ptr_element_type = ptr.get_element_type();
+                            // if ptr_element_type.is_struct_type()
+                            //     && ptr_element_type.into_struct_type() == compiler.any_type
+                            // {
+                            //     // Result of a generic function call
+                            //     let any_tag = get_tag(ptr, compiler);
+                            //     let any_value = get_value(ptr, compiler);
+                            // }
                             target_ptr = compiler
                                 .builder
                                 .build_alloca(
@@ -460,7 +473,6 @@ impl LLVMTypedCodegen for ExprCompare {
         }
 
         for (op, comp) in op_and_comp {
-            println!("{:?}", comp.get_type());
             if comp.is_vector_value() {
                 return Err(BackendError {
                     message: "Invalid type for right compare value.",
@@ -666,6 +678,8 @@ impl LLVMTypedCodegen for ExprCall {
             .map(|arg| arg.typed_codegen(compiler, types))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
+        compiler.dump_module();
+
         if func_name.eq("print") {
             return print_fn(compiler, &args);
         }
@@ -690,7 +704,7 @@ impl LLVMTypedCodegen for ExprCall {
             }
         }
 
-        let args: Vec<BasicMetadataValueEnum> = args
+        let args: Vec<BasicMetadataValueEnum<'_>> = args
             .into_iter()
             .filter_map(|val| match val {
                 AnyValueEnum::IntValue(..) => {
@@ -735,7 +749,10 @@ impl LLVMTypedCodegen for ExprName {
                 if let Some(name_ptr) = sym_table.get(name) {
                     let load = compiler
                         .builder
-                        .build_load(name_ptr.into_pointer_value(), name)
+                        .build_load(
+                            name_ptr.into_pointer_value(),
+                            name,
+                        )
                         .expect("Could not load variable.");
                     return Ok(load.as_any_value_enum());
                 }
@@ -890,12 +907,18 @@ impl LLVMTypedCodegen for ExprBinOp {
                 let rhs;
                 let f64_type = compiler.context.f64_type();
                 if let AnyValueEnum::IntValue(left_val) = left {
-                    lhs = left_val.const_signed_to_float(f64_type);
+                    lhs = compiler
+                        .builder
+                        .build_signed_int_to_float(left_val, f64_type, "")
+                        .unwrap();
                 } else {
                     lhs = left.into_float_value();
                 }
                 if let AnyValueEnum::IntValue(right_val) = right {
-                    rhs = right_val.const_signed_to_float(f64_type);
+                    rhs = compiler
+                        .builder
+                        .build_signed_int_to_float(right_val, f64_type, "")
+                        .unwrap();
                 } else {
                     rhs = right.into_float_value();
                 }
@@ -927,12 +950,22 @@ fn get_left_and_right_as_floats<'ctx>(
     let f64_type = compiler.context.f64_type();
     match (left, right) {
         (AnyValueEnum::IntValue(left_int), _) => {
-            lhs = Some(left_int.const_signed_to_float(f64_type));
+            let lhs_as_float: FloatValue<'ctx> = compiler
+                .builder
+                .build_signed_int_to_float(left_int, f64_type, "")
+                .unwrap()
+                .into();
+            lhs = Some(lhs_as_float);
             rhs = Some(right.into_float_value());
         }
         (_, AnyValueEnum::IntValue(right_int)) => {
             lhs = Some(left.into_float_value());
-            rhs = Some(right_int.const_signed_to_float(f64_type));
+            let rhs_as_float: FloatValue<'ctx> = compiler
+                .builder
+                .build_signed_int_to_float(right_int, f64_type, "")
+                .unwrap()
+                .into();
+            rhs = Some(rhs_as_float);
         }
         (AnyValueEnum::FloatValue(..), AnyValueEnum::FloatValue(..)) => {
             lhs = Some(left.into_float_value());

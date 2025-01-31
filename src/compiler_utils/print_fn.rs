@@ -12,6 +12,7 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
         .get_function("printf")
         .expect("Could not find print function.");
     let mut string_format = String::new();
+
     let mut llvm_args: Vec<BasicMetadataValueEnum<'a>> = Vec::new();
 
     for arg in args {
@@ -69,7 +70,6 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
 
 /**
  * Function that builds the LLVM function for printing an Any value.
- * ChatGPT bc I just need a working print function atm
  */
 pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::FunctionValue<'a> {
     let main_entry = compiler
@@ -145,28 +145,29 @@ pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::Funct
     compiler.builder.position_at_end(block_match_0);
     let any_as_bool_ptr = cast_any_to_struct(any_container, compiler.any_bool_type, compiler);
     let any_bool_value = get_value(any_as_bool_ptr, compiler).into_int_value();
-    if any_bool_value == truth_val {
-        let _ = compiler
+    let is_bool = compiler
         .builder
-        .build_call(
-            print_f,
-            &[
-                true_format_str.as_pointer_value().into(),
-            ],
-            "print_call",
-        )
-        .expect("Could not call printf.");
+        .build_int_compare(inkwell::IntPredicate::EQ, truth_val, any_bool_value, "")
+        .unwrap();
+    // TODO: Change to delegate at runtime
+    if any_bool_value.eq(&truth_val) {
+        let _ = compiler
+            .builder
+            .build_call(
+                print_f,
+                &[true_format_str.as_pointer_value().into()],
+                "print_call",
+            )
+            .expect("Could not call printf.");
     } else {
         let _ = compiler
-        .builder
-        .build_call(
-            print_f,
-            &[
-                false_format_str.as_pointer_value().into(),
-            ],
-            "print_call",
-        )
-        .expect("Could not call printf.");
+            .builder
+            .build_call(
+                print_f,
+                &[false_format_str.as_pointer_value().into()],
+                "print_call",
+            )
+            .expect("Could not call printf.");
     }
     let _ = compiler.builder.build_unconditional_branch(block_merge);
 
@@ -185,7 +186,7 @@ pub fn build_print_any_fn<'a>(compiler: &Compiler<'a>) -> inkwell::values::Funct
             "print_call",
         )
         .expect("Could not call printf.");
-    // Call printf or handle value_as_i64
+
     let _ = compiler.builder.build_unconditional_branch(block_merge);
 
     // Logic for tag = 2 (f64)

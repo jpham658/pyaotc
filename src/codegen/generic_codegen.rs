@@ -1,62 +1,53 @@
 use std::collections::HashMap;
 use std::fmt::format;
+use std::sync::Arc;
 
 use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
-    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprConstant, ExprContext, ExprIfExp,
-    ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFunctionDef, UnaryOp,
+    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
+    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Operator, OperatorAdd, Stmt, StmtAssign, StmtExpr,
+    StmtFunctionDef, UnaryOp,
 };
 
 use crate::compiler::Compiler;
 use crate::compiler_utils::print_fn::build_print_any_fn;
 use crate::compiler_utils::to_any_type::ToAnyType;
 
-use super::any_class_utils::{get_tag, get_value};
+use super::any_class_utils::{cast_any_to_struct, get_tag, get_value};
 use super::error::{BackendError, IRGenResult};
-use super::generic_ops::g_add::build_g_add;
+use super::generic_ops::cmp_operators::build_generic_cmp_op::build_generic_cmp_op;
+use super::generic_ops::operators::build_generic_op::{self, build_generic_op};
 
 pub trait LLVMGenericCodegen {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
 }
 
 impl LLVMGenericCodegen for ExprBinOp {
-    /**
-     * Only called when we want to create a generic function.
-     */
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        let left = self.left.generic_codegen(compiler)?; // Loads Any struct
-        let right = self.right.generic_codegen(compiler)?; // Loads Any struct
-        match self.op {
-            Operator::Add => {
-                // call generic add
-                let g_add_fn;
-                let g_add_opt = compiler
-                    .module
-                    .get_function("g_add");
-                match g_add_opt {
-                    Some(f) => g_add_fn = f,
-                    None => g_add_fn = build_g_add(compiler) 
-                }
-                let g_add_call = compiler
-                    .builder
-                    .build_call(
-                        g_add_fn,
-                        &[
-                            BasicMetadataValueEnum::PointerValue(left.into_pointer_value()),
-                            BasicMetadataValueEnum::PointerValue(right.into_pointer_value()),
-                        ],
-                        "g_add_call",
-                    )
-                    .expect("Could not perform generic add.");
-                Ok(g_add_call.as_any_value_enum())
-            }
-            _ => Err(BackendError {
-                message: "Not implemented yet...",
-            }),
-        }
+        let left = self.left.generic_codegen(compiler)?;
+        let right = self.right.generic_codegen(compiler)?;
+        let g_op_fn_name = format!("{:?}", self.op);
+        let g_op_opt = compiler.module.get_function(&g_op_fn_name);
+        let g_op_fn = if let Some(fn_val) = g_op_opt {
+            fn_val
+        } else {
+            build_generic_op(&self.op, compiler).expect("Could not build generic op function.")
+        };
+        let g_op_call = compiler
+            .builder
+            .build_call(
+                g_op_fn,
+                &[
+                    BasicMetadataValueEnum::PointerValue(left.into_pointer_value()),
+                    BasicMetadataValueEnum::PointerValue(right.into_pointer_value()),
+                ],
+                "",
+            )
+            .expect(format!("Could not perform generic {:?}.", self.op).as_str());
+        Ok(g_op_call.as_any_value_enum())
     }
 }
 
@@ -90,7 +81,7 @@ impl LLVMGenericCodegen for StmtFunctionDef {
 
         let func_name = format!("{}_g", self.name.as_str());
         let any_type_ptr = compiler.any_type.ptr_type(AddressSpace::default());
-        let any_args: Vec<BasicMetadataTypeEnum> = self
+        let any_args: Vec<BasicMetadataTypeEnum<'_>> = self
             .args
             .args
             .clone()
@@ -195,6 +186,7 @@ impl LLVMGenericCodegen for Expr {
             Expr::Name(name) => name.generic_codegen(compiler),
             Expr::Call(call) => call.generic_codegen(compiler),
             Expr::BoolOp(boolop) => boolop.generic_codegen(compiler),
+            Expr::Compare(cmp) => cmp.generic_codegen(compiler),
             Expr::UnaryOp(unop) => unop.generic_codegen(compiler),
             Expr::IfExp(ifexp) => ifexp.generic_codegen(compiler),
             Expr::List(list) => list.generic_codegen(compiler),
@@ -221,8 +213,101 @@ impl LLVMGenericCodegen for ExprIfExp {
     }
 }
 
-// Doesn't work rn...
-// TODO: Fix
+impl LLVMGenericCodegen for ExprCompare {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        let mut left = self.left.generic_codegen(compiler)?;
+        let comparators = self
+            .comparators
+            .clone()
+            .into_iter()
+            .map(|comp| {
+                comp.generic_codegen(compiler)
+                    .expect("Could not compile comparator.")
+            })
+            .collect::<Vec<_>>();
+        let ops = self.ops.clone();
+
+        let op_and_comp = ops
+            .into_iter()
+            .zip(comparators.into_iter())
+            .collect::<Vec<(_, _)>>();
+
+        let mut conditions = Vec::new();
+
+        for (op, comp) in op_and_comp {
+            if comp.is_vector_value() {
+                return Err(BackendError {
+                    message: "Invalid type for right compare value.",
+                });
+            }
+            let g_cmpop_fn_name = format!("{:?}", op);
+            let g_cmpop_opt = compiler.module.get_function(&g_cmpop_fn_name);
+            let g_op_fn = if let Some(fn_val) = g_cmpop_opt {
+                fn_val
+            } else {
+                build_generic_cmp_op(&op, compiler)
+                    .expect("Could not build generic cmp-op function.")
+            };
+            let llvm_comp = compiler
+                .builder
+                .build_call(
+                    g_op_fn,
+                    &[
+                        BasicMetadataValueEnum::PointerValue(left.into_pointer_value()),
+                        BasicMetadataValueEnum::PointerValue(comp.into_pointer_value()),
+                    ],
+                    "",
+                )
+                .expect(format!("Could not perform generic {:?}.", op).as_str());
+            conditions.push(llvm_comp.as_any_value_enum());
+            left = llvm_comp.as_any_value_enum();
+        }
+
+        let composite_comp_ptr = conditions[0].into_pointer_value();
+        let composite_comp_ptr_as_bool =
+            cast_any_to_struct(composite_comp_ptr, compiler.any_bool_type, compiler);
+        let mut composite_comp = get_value(composite_comp_ptr_as_bool, compiler).into_int_value();
+
+        for cond in conditions {
+            let cond_ptr = cond.into_pointer_value();
+            // Results in condition will always be booleans stored in Any structs
+            let cond_ptr_as_bool = cast_any_to_struct(cond_ptr, compiler.any_bool_type, compiler);
+            let cond = get_value(cond_ptr_as_bool, compiler).into_int_value();
+            composite_comp = compiler
+                .builder
+                .build_and(composite_comp, cond, "")
+                .expect("Could not build 'and' for compare.");
+        }
+
+        composite_comp = compiler
+            .builder
+            .build_int_cast_sign_flag(composite_comp, compiler.context.i8_type(), false, "")
+            .unwrap();
+
+        let res_ptr = compiler
+            .builder
+            .build_malloc(compiler.any_type, "")
+            .expect("Could not perform malloc.");
+        let res_ptr_as_bool = cast_any_to_struct(res_ptr, compiler.any_bool_type, compiler);
+        let res_tag_ptr = compiler
+            .builder
+            .build_struct_gep(res_ptr_as_bool, 0, "")
+            .unwrap();
+        let _ = compiler
+            .builder
+            .build_store(res_tag_ptr, compiler.context.i8_type().const_int(0, false));
+        let res_val_ptr = compiler
+            .builder
+            .build_struct_gep(res_ptr_as_bool, 1, "")
+            .unwrap();
+        let _ = compiler.builder.build_store(res_val_ptr, composite_comp);
+
+        Ok(res_ptr.as_any_value_enum())
+    }
+}
+
+// TODO: Since I know the result of this will either be int or float,
+// do I even need to wrap in Any?
 impl LLVMGenericCodegen for ExprUnaryOp {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         let i8_type = compiler.context.i8_type();
@@ -230,27 +315,74 @@ impl LLVMGenericCodegen for ExprUnaryOp {
         let false_as_u64 = u64::from(false);
         let truth_val = i8_type.const_int(true_as_u64, false);
         let false_val = i8_type.const_int(false_as_u64, false);
-        
+
         let i64_type = compiler.context.i64_type();
         let zero = i64_type.const_zero();
-        
+
         let operand_ptr = self.operand.generic_codegen(compiler)?.into_pointer_value();
         let operand_tag = get_tag(operand_ptr, compiler);
-        let operand_value = get_value(operand_ptr, compiler);
 
-        match self.op {
-            UnaryOp::Not => {
-                Ok(operand_ptr.as_any_value_enum()) 
+        println!("{:?}", operand_tag); // TODO: need to update this with runtime compatible code...
+        let operand_ptr = if operand_tag == i8_type.const_int(0, false) {
+            cast_any_to_struct(operand_ptr, compiler.any_bool_type, compiler)
+        } else if operand_tag == i8_type.const_int(1, false) {
+            cast_any_to_struct(operand_ptr, compiler.any_int_type, compiler)
+        } else if operand_tag == i8_type.const_int(2, false) {
+            cast_any_to_struct(operand_ptr, compiler.any_float_type, compiler)
+        } else {
+            return Err(BackendError {
+                message: "Invalid Any type.",
+            });
+        };
+
+        let operand = get_value(operand_ptr, compiler).as_any_value_enum();
+
+        match (self.op, operand) {
+            (UnaryOp::Not, AnyValueEnum::IntValue(i)) => {
+                // TODO: Extend for sequence, set, and string types...
+                if i == false_val {
+                    Ok(truth_val.as_any_value_enum())
+                } else if i == truth_val {
+                    Ok(false_val.as_any_value_enum())
+                } else {
+                    // i64 type
+                    if i == zero {
+                        Ok(truth_val.as_any_value_enum())
+                    } else {
+                        Ok(false_val.as_any_value_enum())
+                    }
+                }
             }
-            UnaryOp::UAdd => {
-                Ok(operand_ptr.as_any_value_enum())
+            (UnaryOp::USub, AnyValueEnum::IntValue(i)) => {
+                if i == false_val {
+                    Ok(zero.as_any_value_enum())
+                } else if i == truth_val {
+                    let one = i64_type.const_int(1, false);
+                    let minus = compiler
+                        .builder
+                        .build_int_nsw_neg(one, "")
+                        .expect("Could not build negation.");
+                    Ok(minus.as_any_value_enum())
+                } else {
+                    let minus = compiler
+                        .builder
+                        .build_int_nsw_neg(operand.into_int_value(), "")
+                        .expect("Could not build negation.");
+                    Ok(minus.as_any_value_enum())
+                }
             }
-            UnaryOp::USub => {
-                Ok(operand_ptr.as_any_value_enum())
+            (UnaryOp::USub, AnyValueEnum::FloatValue(..)) => {
+                let minus = compiler
+                    .builder
+                    .build_float_neg(operand.into_float_value(), "")
+                    .expect("Could not build negation.");
+                Ok(minus.as_any_value_enum())
             }
-            _ => {
-                Err(BackendError{ message: "Invalid operand for given unary op." })
-            }
+            (UnaryOp::UAdd, AnyValueEnum::IntValue(i)) => Ok(i.as_any_value_enum()),
+            (UnaryOp::UAdd, AnyValueEnum::FloatValue(f)) => Ok(f.as_any_value_enum()),
+            _ => Err(BackendError {
+                message: "Invalid operand for given unary op.",
+            }),
         }
     }
 }
@@ -327,7 +459,7 @@ impl LLVMGenericCodegen for ExprCall {
             .map(|arg| arg.generic_codegen(compiler))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
-        let args: Vec<BasicMetadataValueEnum> = args
+        let args: Vec<BasicMetadataValueEnum<'_>> = args
             .into_iter()
             .filter_map(|val| match val {
                 AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(

@@ -1,10 +1,12 @@
+#![deny(elided_lifetimes_in_paths)]
+
 mod astutils;
 mod compiler;
 mod type_inference;
 mod compiler_utils;
 mod codegen;
 
-use std::collections::HashMap;
+use std::{any::Any, collections::HashMap, hash::{DefaultHasher, Hasher}};
 use compiler::Compiler;
 use inkwell::context::Context;
 use rustpython_parser::{
@@ -12,6 +14,7 @@ use rustpython_parser::{
     Parse,
 };
 use type_inference::{infer_types, Type, TypeEnv, TypeInferrer};
+
 
 fn types_pp(name_to_type: &HashMap<String, Type>) {
     println!("Name                          Type");
@@ -24,7 +27,10 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-y = 1 <= 2 <= 1
+def eq(x, y):
+    return x == y
+y = eq(1, 1.0)
+print(y)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
