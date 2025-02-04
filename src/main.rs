@@ -6,9 +6,10 @@ mod type_inference;
 mod compiler_utils;
 mod codegen;
 
-use std::{any::Any, collections::HashMap, hash::{DefaultHasher, Hasher}};
+use std::{any::Any, collections::HashMap, ffi::CString, hash::{DefaultHasher, Hasher}};
 use compiler::Compiler;
 use inkwell::context::Context;
+use llvm_sys::{core::LLVMCreateMemoryBufferWithMemoryRangeCopy, ir_reader::LLVMParseIRInContext};
 use rustpython_parser::{
     ast::{self, Stmt},
     Parse,
@@ -27,10 +28,8 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-def eq(x, y):
-    return x == y
-y = eq(1, 1.0)
-print(y)
+w = True + False
+print(w)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
@@ -67,8 +66,8 @@ print(y)
                 }
             }
             types_pp(&types);
-            compiler.compile(&ast, &types);
-            // compiler.compile_generically(&ast);
+            // compiler.compile(&ast, &types);
+            compiler.compile_generically(&ast);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);

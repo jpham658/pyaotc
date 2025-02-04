@@ -1,11 +1,14 @@
 use inkwell::{
-    values::{FloatValue, FunctionValue, PointerValue},
+    values::{AnyValue, FloatValue, FunctionValue, IntValue, PointerValue},
     AddressSpace,
 };
 use rustpython_parser::ast::{Operator, OperatorAdd};
 
 use crate::{
-    codegen::{any_class_utils::{any_is_float, any_is_int, cast_any_to_struct, get_tag, get_value}, generic_ops::build_generic_op::BuildGenericOp},
+    codegen::{
+        any_class_utils::{any_is_float, any_is_int, cast_any_to_struct, get_tag, get_value},
+        generic_ops::build_generic_op::BuildGenericOp,
+    },
     compiler::Compiler,
 };
 
@@ -15,156 +18,453 @@ use crate::{
  */
 impl BuildGenericOp for OperatorAdd {
     fn build_generic_op<'a>(compiler: &Compiler<'a>) -> Option<FunctionValue<'a>> {
-        let main_entry = compiler
-            .builder
-            .get_insert_block()
-            .unwrap();
+        let main_entry = compiler.builder.get_insert_block().unwrap();
 
-        let any_type_ptr = compiler.any_type.ptr_type(AddressSpace::default());
-        let g_add_fn_type = any_type_ptr.fn_type(&[any_type_ptr.into(), any_type_ptr.into()], false);
         let f64_type = compiler.context.f64_type();
+        let i64_type = compiler.context.i64_type();
+        let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+        let g_add_fn_type =
+            obj_ptr_type.fn_type(&[obj_ptr_type.into(), obj_ptr_type.into()], false);
 
         let fn_name = format!("{:?}", Operator::Add);
         let function = compiler.module.add_function(&fn_name, g_add_fn_type, None);
 
+        let left_obj = function.get_nth_param(0).unwrap().into_pointer_value();
+        let right_obj = function.get_nth_param(1).unwrap().into_pointer_value();
+
+        // Get helper functions
+        // These should not fail - we define them all during compiler setup.
+        let object_is_int_fn = compiler.module.get_function("object_is_int").unwrap();
+        let object_as_int_fn = compiler.module.get_function("object_as_int").unwrap();
+        let object_is_bool_fn = compiler.module.get_function("object_is_bool").unwrap();
+        let object_as_bool_fn = compiler.module.get_function("object_as_bool").unwrap();
+        let object_is_float_fn = compiler.module.get_function("object_is_float").unwrap();
+        let object_as_float_fn = compiler.module.get_function("object_as_float").unwrap();
+        let object_is_str_fn = compiler.module.get_function("object_is_str").unwrap();
+        let object_as_str_fn = compiler.module.get_function("object_as_str").unwrap();
+
         let entry_block = compiler.context.append_basic_block(function, "entry");
         compiler.builder.position_at_end(entry_block);
-
-        let left_any = function.get_nth_param(0).unwrap().into_pointer_value();
-        let right_any = function.get_nth_param(1).unwrap().into_pointer_value();
-
-        let left_tag_value = get_tag(left_any, compiler);
-        let right_tag_value = get_tag(right_any, compiler);
-
-        let left_is_int = any_is_int(compiler, left_tag_value);
-        let left_is_float = any_is_float(compiler, left_tag_value);
-        let right_is_int = any_is_int(compiler, right_tag_value);
-        let right_is_float = any_is_float(compiler, right_tag_value);
-
-        let sum_ptr = compiler
+        let sum_obj_ptr = compiler
             .builder
-            .build_malloc(compiler.any_type, "malloc")
-            .expect("Could not allocate heap memory.");
+            .build_alloca(obj_ptr_type, "sum")
+            .expect("Could not allocate memory for Object pointer");
 
-        // Conditions
-        // In form [left_type]_[right_type]
+        // Define blocks
+        let handle_int_int = compiler
+            .context
+            .append_basic_block(function, "handle_int_int");
+
+        let test_int_float = compiler
+            .context
+            .append_basic_block(function, "test_int_float");
+        let handle_int_float = compiler
+            .context
+            .append_basic_block(function, "handle_int_float");
+
+        let test_float_int = compiler
+            .context
+            .append_basic_block(function, "test_float_int");
+        let handle_float_int = compiler
+            .context
+            .append_basic_block(function, "handle_float_int");
+
+        let test_float_float = compiler
+            .context
+            .append_basic_block(function, "test_float_float");
+        let handle_float_float = compiler
+            .context
+            .append_basic_block(function, "handle_float_float");
+
+        let test_int_bool = compiler
+            .context
+            .append_basic_block(function, "test_int_bool");
+        let handle_int_bool = compiler
+            .context
+            .append_basic_block(function, "handle_int_bool");
+
+        let test_bool_int = compiler
+            .context
+            .append_basic_block(function, "test_bool_int");
+        let handle_bool_int = compiler
+            .context
+            .append_basic_block(function, "handle_bool_int");
+
+        let test_float_bool = compiler
+            .context
+            .append_basic_block(function, "test_float_bool");
+        let handle_float_bool = compiler
+            .context
+            .append_basic_block(function, "handle_float_bool");
+
+        let test_bool_float = compiler
+            .context
+            .append_basic_block(function, "test_bool_float");
+        let handle_bool_float = compiler
+            .context
+            .append_basic_block(function, "handle_bool_float");
+
+        let test_bool_bool = compiler
+            .context
+            .append_basic_block(function, "test_bool_bool");
+        let handle_bool_bool = compiler
+            .context
+            .append_basic_block(function, "handle_bool_bool");
+
+        let unreachable_block = compiler.context.append_basic_block(function, "unreachable");
+        let merge_block = compiler.context.append_basic_block(function, "merge");
+
+        // TODO: Add string concatenation...!
+        // Python can only do str + str, so you need to implement str() constructor
+        let left_is_int = compiler
+            .builder
+            .build_call(object_is_int_fn, &[left_obj.into()], "")
+            .expect("Could not test if left operand is int.")
+            .as_any_value_enum()
+            .into_int_value();
+        let left_is_bool = compiler
+            .builder
+            .build_call(object_is_bool_fn, &[left_obj.into()], "")
+            .expect("Could not test if left operand is bool.")
+            .as_any_value_enum()
+            .into_int_value();
+        let left_is_float = compiler
+            .builder
+            .build_call(object_is_float_fn, &[left_obj.into()], "")
+            .expect("Could not test if left operand is float.")
+            .as_any_value_enum()
+            .into_int_value();
+        let left_is_str = compiler
+            .builder
+            .build_call(object_is_str_fn, &[left_obj.into()], "")
+            .expect("Could not test if left operand is string.")
+            .as_any_value_enum()
+            .into_int_value();
+
+        let right_is_int = compiler
+            .builder
+            .build_call(object_is_int_fn, &[right_obj.into()], "")
+            .expect("Could not test if right operand is int.")
+            .as_any_value_enum()
+            .into_int_value();
+        let right_is_bool = compiler
+            .builder
+            .build_call(object_is_bool_fn, &[right_obj.into()], "")
+            .expect("Could not test if right operand is bool.")
+            .as_any_value_enum()
+            .into_int_value();
+        let right_is_float = compiler
+            .builder
+            .build_call(object_is_float_fn, &[right_obj.into()], "")
+            .expect("Could not test if right operand is float.")
+            .as_any_value_enum()
+            .into_int_value();
+        let right_is_str = compiler
+            .builder
+            .build_call(object_is_str_fn, &[right_obj.into()], "")
+            .expect("Could not test if right operand is string.")
+            .as_any_value_enum()
+            .into_int_value();
+
+        // Define conditions
         let int_int = compiler
             .builder
             .build_and(left_is_int, right_is_int, "int_int")
-            .expect("Could not build 'and' condition for int_int.");
-        let float_int = compiler
-            .builder
-            .build_and(left_is_float, right_is_int, "float_int")
-            .expect("Could not build 'and' condition for float_int.");
+            .unwrap();
         let int_float = compiler
             .builder
             .build_and(left_is_int, right_is_float, "int_float")
-            .expect("Could not build 'and' condition for int_float.");
+            .unwrap();
+        let float_int = compiler
+            .builder
+            .build_and(left_is_float, right_is_int, "float_int")
+            .unwrap();
         let float_float = compiler
             .builder
             .build_and(left_is_float, right_is_float, "float_float")
-            .expect("Could not build 'and' condition for float_float.");
+            .unwrap();
+        let int_bool = compiler
+            .builder
+            .build_and(left_is_int, right_is_bool, "int_bool")
+            .unwrap();
+        let bool_int = compiler
+            .builder
+            .build_and(left_is_bool, right_is_int, "bool_int")
+            .unwrap();
+        let float_bool = compiler
+            .builder
+            .build_and(left_is_float, right_is_bool, "float_bool")
+            .unwrap();
+        let bool_float = compiler
+            .builder
+            .build_and(left_is_bool, right_is_float, "bool_float")
+            .unwrap();
+        let bool_bool = compiler
+            .builder
+            .build_and(left_is_bool, right_is_bool, "bool_bool")
+            .unwrap();
 
-        // TODO: Throw some sort of error here if we have incompatible types
-        let block_int_int = compiler.context.append_basic_block(function, "int_int");
-        let block_test_float_int = compiler
-            .context
-            .append_basic_block(function, "test_float_int");
-        let block_float_int = compiler.context.append_basic_block(function, "float_int");
-        let block_test_int_float = compiler
-            .context
-            .append_basic_block(function, "test_int_float");
-        let block_int_float = compiler.context.append_basic_block(function, "int_float");
-        let block_test_float_float = compiler
-            .context
-            .append_basic_block(function, "test_float_float");
-        let block_float_float = compiler.context.append_basic_block(function, "float_float");
-        let block_merge = compiler.context.append_basic_block(function, "merge");
-
-        // Declare conditionals
-        // TODO: Refactor to just check if operands are floats, then cast
-        // Otherwise can handle bools and ints the same... i.e. True + 2 = 3
+        // Build conditions
+        // entry -> handle_int_int or test_int_float
         let _ = compiler
             .builder
-            .build_conditional_branch(int_int, block_int_int, block_test_float_int);
-        let _ = compiler.builder.position_at_end(block_test_float_int);
-        let _ = compiler
+            .build_conditional_branch(int_int, handle_int_int, test_int_float);
+        // test_int_float -> handle_int_float or test_float_int
+        let _ = compiler.builder.position_at_end(test_int_float);
+        let _ =
+            compiler
                 .builder
-                .build_conditional_branch(float_int, block_float_int, block_test_int_float);
-        let _ = compiler.builder.position_at_end(block_test_int_float);
+                .build_conditional_branch(int_float, handle_int_float, test_float_int);
+        // test_float_int -> handle_float_int or test_float_float
+        let _ = compiler.builder.position_at_end(test_float_int);
         let _ = compiler.builder.build_conditional_branch(
-            int_float,
-            block_int_float,
-            block_test_float_float,
+            float_int,
+            handle_float_int,
+            test_float_float,
         );
-        let _ = compiler.builder.position_at_end(block_test_float_float);
+        // test_float_float -> handle_float_float or test_int_bool
+        let _ = compiler.builder.position_at_end(test_float_float);
+        let _ = compiler.builder.build_conditional_branch(
+            float_float,
+            handle_float_float,
+            test_int_bool,
+        );
+        // test_int_bool -> handle_int_bool or test_bool_int
+        let _ = compiler.builder.position_at_end(test_int_bool);
         let _ = compiler
             .builder
-            .build_conditional_branch(float_float, block_float_float, block_merge);
+            .build_conditional_branch(int_bool, handle_int_bool, test_bool_int);
+        // test_bool_int -> handle_bool_int or test_float_bool
+        let _ = compiler.builder.position_at_end(test_bool_int);
+        let _ =
+            compiler
+                .builder
+                .build_conditional_branch(bool_int, handle_bool_int, test_float_bool);
+        // test_float_bool -> handle_float_bool or test_bool_float
+        let _ = compiler.builder.position_at_end(test_float_bool);
+        let _ = compiler.builder.build_conditional_branch(
+            float_bool,
+            handle_float_bool,
+            test_bool_float,
+        );
+        // test_bool_float -> handle_bool_float or test_bool_bool
+        let _ = compiler.builder.position_at_end(test_bool_float);
+        let _ = compiler.builder.build_conditional_branch(
+            bool_float,
+            handle_bool_float,
+            test_bool_bool,
+        );
+        // test_bool_bool -> handle_bool_bool or unreachable
+        let _ = compiler.builder.position_at_end(test_bool_bool);
+        let _ = compiler.builder.build_conditional_branch(
+            bool_bool,
+            handle_bool_bool,
+            unreachable_block,
+        );
 
-        // Block int_int
-        let _ = compiler.builder.position_at_end(block_int_int);
-        let left_as_int_ptr = cast_any_to_struct(left_any, compiler.any_int_type, compiler);
-        let right_as_int_ptr = cast_any_to_struct(right_any, compiler.any_int_type, compiler);
-        let left_val = get_value(left_as_int_ptr, compiler).into_int_value();
-        let right_val = get_value(right_as_int_ptr, compiler).into_int_value();
-
-        let sum_tag = compiler.context.i8_type().const_int(1, false);
-        let sum_tag_ptr = compiler
+        // Handle blocks
+        // handle_int_int
+        let _ = compiler.builder.position_at_end(handle_int_int);
+        let left_as_int = compiler
             .builder
-            .build_struct_gep(sum_ptr, 0, "sum_tag_ptr")
-            .expect("Error: Could not get Any container tag.");
-        let _ = compiler.builder.build_store(sum_tag_ptr, sum_tag);
-
-        let sum_ptr_as_int = cast_any_to_struct(sum_ptr, compiler.any_int_type, compiler);
-        let int_sum_val = compiler
+            .build_call(object_as_int_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_int = compiler
             .builder
-            .build_int_nsw_add(left_val, right_val, "int_sum_val")
-            .expect("Could not perform integer addition.");
-        let sum_val_ptr = compiler
+            .build_call(object_as_int_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let sum_obj = build_iadd(left_as_int, right_as_int, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        let _ = compiler.builder.build_unconditional_branch(merge_block);
+
+        // handle_int_float
+        let _ = compiler.builder.position_at_end(handle_int_float);
+        let left_as_int = compiler
             .builder
-            .build_struct_gep(sum_ptr_as_int, 1, "sum_val_ptr")
-            .expect("Error: Could not get Any container value.");
-        let _ = compiler.builder.build_store(sum_val_ptr, int_sum_val);
-        let _ = compiler.builder.build_unconditional_branch(block_merge);
-
-        // Block float_int
-        let _ = compiler.builder.position_at_end(block_float_int);
-        let left_as_float_ptr = cast_any_to_struct(left_any, compiler.any_float_type, compiler);
-        let right_as_int_ptr = cast_any_to_struct(right_any, compiler.any_int_type, compiler);
-        let left_val = get_value(left_as_float_ptr, compiler).into_float_value();
-        let right_val = get_value(right_as_int_ptr, compiler).into_int_value();
-        let right_val_as_float = compiler
+            .build_call(object_as_int_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_float = compiler
             .builder
-            .build_signed_int_to_float(right_val, f64_type, "right_val_as_float")
-            .expect("Could not cast right operand to float.");
-        build_fadd(left_val, right_val_as_float, sum_ptr, compiler);
-        let _ = compiler.builder.build_unconditional_branch(block_merge);
-
-        // Block int_float
-        let _ = compiler.builder.position_at_end(block_int_float);
-        let left_as_int_ptr = cast_any_to_struct(left_any, compiler.any_int_type, compiler);
-        let right_as_float_ptr = cast_any_to_struct(right_any, compiler.any_float_type, compiler);
-        let left_val = get_value(left_as_int_ptr, compiler).into_int_value();
-        let left_val_as_float = compiler
+            .build_call(object_as_float_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_float_value();
+        let left_as_float = compiler
             .builder
-            .build_signed_int_to_float(left_val, f64_type, "left_val_as_float")
-            .expect("Could not cast left operand to float.");
-        let right_val = get_value(right_as_float_ptr, compiler).into_float_value();
-        build_fadd(left_val_as_float, right_val, sum_ptr, compiler);
-        let _ = compiler.builder.build_unconditional_branch(block_merge);
+            .build_signed_int_to_float(left_as_int, f64_type, "")
+            .expect("Could not cast int to float.");
+        let sum_obj = build_fadd(left_as_float, right_as_float, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        let _ = compiler.builder.build_unconditional_branch(merge_block);
 
-        // Block float_float
-        let _ = compiler.builder.position_at_end(block_float_float);
-        let left_as_float_ptr = cast_any_to_struct(left_any, compiler.any_float_type, compiler);
-        let right_as_float_ptr = cast_any_to_struct(right_any, compiler.any_float_type, compiler);
-        let left_val = get_value(left_as_float_ptr, compiler).into_float_value();
-        let right_val = get_value(right_as_float_ptr, compiler).into_float_value();
-        build_fadd(left_val, right_val, sum_ptr, compiler);
-        let _ = compiler.builder.build_unconditional_branch(block_merge);
+        // handle_float_int
+        let _ = compiler.builder.position_at_end(handle_float_int);
+        let left_as_float = compiler
+            .builder
+            .build_call(object_as_float_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_float_value();
+        let right_as_int = compiler
+            .builder
+            .build_call(object_as_int_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_float = compiler
+            .builder
+            .build_signed_int_to_float(right_as_int, f64_type, "")
+            .expect("Could not cast int to float.");
+        let sum_obj = build_fadd(left_as_float, right_as_float, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        let _ = compiler.builder.build_unconditional_branch(merge_block);
 
-        let _ = compiler.builder.position_at_end(block_merge);
-        let _ = compiler.builder.build_return(Some(&sum_ptr));
+        // handle_float_float
+        let _ = compiler.builder.position_at_end(handle_float_float);
+        let left_as_float = compiler
+            .builder
+            .build_call(object_as_float_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_float_value();
+        let right_as_float = compiler
+            .builder
+            .build_call(object_as_float_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_float_value();
+        let sum_obj = build_fadd(left_as_float, right_as_float, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        let _ = compiler.builder.build_unconditional_branch(merge_block);
+
+        // handle_int_bool
+        let _ = compiler.builder.position_at_end(handle_int_bool);
+        let left_as_int = compiler
+            .builder
+            .build_call(object_as_int_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_bool = compiler
+            .builder
+            .build_call(object_as_bool_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_int = compiler
+            .builder
+            .build_int_z_extend(right_as_bool, i64_type, "")
+            .expect("Could not cast boolean to integer.");
+        let sum_obj = build_iadd(left_as_int, right_as_int, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        _ = compiler.builder.build_unconditional_branch(merge_block);
+
+        // handle_bool_int
+        let _ = compiler.builder.position_at_end(handle_bool_int);
+        let left_as_bool = compiler
+            .builder
+            .build_call(object_as_bool_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_int = compiler
+            .builder
+            .build_call(object_as_int_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let left_as_int = compiler
+            .builder
+            .build_int_z_extend(left_as_bool, i64_type, "")
+            .expect("Could not cast boolean to integer.");
+        let sum_obj = build_iadd(left_as_int, right_as_int, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        let _ = compiler.builder.build_unconditional_branch(merge_block);
+
+        // handle_float_bool
+        let _ = compiler.builder.position_at_end(handle_float_bool);
+        let left_as_float = compiler
+            .builder
+            .build_call(object_as_float_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_float_value();
+        let right_as_bool = compiler
+            .builder
+            .build_call(object_as_bool_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_float = compiler
+            .builder
+            .build_unsigned_int_to_float(right_as_bool, f64_type, "")
+            .expect("Could not cast boolean to float.");
+        let sum_obj = build_fadd(left_as_float, right_as_float, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        let _ = compiler.builder.build_unconditional_branch(merge_block);
+
+        // handle_bool_float
+        let _ = compiler.builder.position_at_end(handle_bool_float);
+        let left_as_bool = compiler
+            .builder
+            .build_call(object_as_bool_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_float = compiler
+            .builder
+            .build_call(object_as_float_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_float_value();
+        let left_as_float = compiler
+            .builder
+            .build_unsigned_int_to_float(left_as_bool, f64_type, "")
+            .expect("Could not cast boolean to float.");
+        let sum_obj = build_fadd(left_as_float, right_as_float, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        let _ = compiler.builder.build_unconditional_branch(merge_block);
+
+        // handle_bool_bool
+        let _ = compiler.builder.position_at_end(handle_bool_bool);
+        let left_as_bool = compiler
+            .builder
+            .build_call(object_as_bool_fn, &[left_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let right_as_bool = compiler
+            .builder
+            .build_call(object_as_bool_fn, &[right_obj.into()], "")
+            .unwrap()
+            .as_any_value_enum()
+            .into_int_value();
+        let left_as_int = compiler
+            .builder
+            .build_int_z_extend(left_as_bool, i64_type, "")
+            .expect("Could not cast boolean to int.");
+        let right_as_int = compiler
+            .builder
+            .build_int_z_extend(right_as_bool, i64_type, "")
+            .expect("Could not cast boolean to int.");
+        let sum_obj = build_iadd(left_as_int, right_as_int, compiler);
+        let _ = compiler.builder.build_store(sum_obj_ptr, sum_obj);
+        let _ = compiler.builder.build_unconditional_branch(merge_block);
+
+        // merge
+        let _ = compiler.builder.position_at_end(merge_block);
+        let sum_obj = compiler.builder.build_load(sum_obj_ptr, "sum_obj").expect("Could not load value from pointer.");
+        let _ = compiler.builder.build_return(Some(&sum_obj));
+
+        // unreachable
+        let _ = compiler.builder.position_at_end(unreachable_block);
+        let _ = compiler.builder.build_unreachable();
 
         // reset back to normal!
         compiler.builder.position_at_end(main_entry);
@@ -173,27 +473,44 @@ impl BuildGenericOp for OperatorAdd {
     }
 }
 
+/**
+ * Add two float values together and return a generic Object storing this float.
+ */
 fn build_fadd<'a>(
     left_val: FloatValue<'a>,
     right_val: FloatValue<'a>,
-    sum_ptr: PointerValue<'a>,
     compiler: &Compiler<'a>,
-) {
-    let sum_tag = compiler.context.i8_type().const_int(2, false);
-    let sum_tag_ptr = compiler
-        .builder
-        .build_struct_gep(sum_ptr, 0, "sum_tag_ptr")
-        .expect("Error: Could not get Any container tag.");
-    let _ = compiler.builder.build_store(sum_tag_ptr, sum_tag);
-
-    let sum_ptr_as_float = cast_any_to_struct(sum_ptr, compiler.any_float_type, compiler);
+) -> PointerValue<'a> {
+    let new_float_fn = compiler.module.get_function("new_float").unwrap();
     let float_sum_val = compiler
         .builder
         .build_float_add(left_val, right_val, &"fadd")
         .expect("Could not perform float addition.");
-    let sum_val_ptr = compiler
+    let float_obj = compiler
         .builder
-        .build_struct_gep(sum_ptr_as_float, 1, "sum_val_ptr")
-        .expect("Error: Could not get Any container value.");
-    let _ = compiler.builder.build_store(sum_val_ptr, float_sum_val);
+        .build_call(new_float_fn, &[float_sum_val.into()], "")
+        .expect("Could not call new_float.")
+        .as_any_value_enum();
+    float_obj.into_pointer_value()
+}
+
+/**
+ * Add two int values together and return a generic Object storing this int.
+ */
+fn build_iadd<'a>(
+    left_val: IntValue<'a>,
+    right_val: IntValue<'a>,
+    compiler: &Compiler<'a>,
+) -> PointerValue<'a> {
+    let new_int_fn = compiler.module.get_function("new_int").unwrap();
+    let int_sum_val = compiler
+        .builder
+        .build_int_add(left_val, right_val, &"iadd")
+        .expect("Could not perform integer addition.");
+    let int_obj = compiler
+        .builder
+        .build_call(new_int_fn, &[int_sum_val.into()], "")
+        .expect("Could not call new_int.")
+        .as_any_value_enum();
+    int_obj.into_pointer_value()
 }

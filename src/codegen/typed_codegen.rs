@@ -105,8 +105,13 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 match arg_type {
                     Type::ConcreteType(ConcreteValue::Int) => compiler.context.i64_type().into(),
                     Type::ConcreteType(ConcreteValue::Float) => compiler.context.f64_type().into(),
+                    Type::ConcreteType(ConcreteValue::Bool) => compiler.context.bool_type().into(),
                     _ => {
-                        compiler.context.i8_type().into() // TODO: better way to handle this
+                        compiler
+                            .context
+                            .i8_type()
+                            .ptr_type(AddressSpace::default())
+                            .into() // TODO: better way to handle this
                     }
                 }
             })
@@ -121,7 +126,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 compiler.context.f64_type().fn_type(&llvm_arg_types, false)
             }
             Type::ConcreteType(ConcreteValue::Bool) | Type::ConcreteType(ConcreteValue::Str) => {
-                compiler.context.i8_type().fn_type(&llvm_arg_types, false)
+                compiler.context.bool_type().fn_type(&llvm_arg_types, false)
             }
             Type::ConcreteType(ConcreteValue::None) => {
                 compiler.context.void_type().fn_type(&llvm_arg_types, false)
@@ -133,10 +138,14 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 Type::ConcreteType(ConcreteValue::Float) => {
                     compiler.context.f64_type().fn_type(&llvm_arg_types, false)
                 }
-                Type::ConcreteType(ConcreteValue::Bool)
-                | Type::ConcreteType(ConcreteValue::Str) => {
-                    compiler.context.i8_type().fn_type(&llvm_arg_types, false)
+                Type::ConcreteType(ConcreteValue::Bool) => {
+                    compiler.context.bool_type().fn_type(&llvm_arg_types, false)
                 }
+                Type::ConcreteType(ConcreteValue::Str) => compiler
+                    .context
+                    .i8_type()
+                    .ptr_type(AddressSpace::default())
+                    .fn_type(&llvm_arg_types, false),
                 _ => {
                     println!("{:?}", return_type);
                     return Err(BackendError {
@@ -310,8 +319,8 @@ impl LLVMTypedCodegen for StmtAssign {
                         AnyTypeEnum::IntType(..) => {
                             // Booleans get cast to integers, so distinguish between the two...
                             let itype = typed_value.get_type().into_int_type();
-                            let alloc_type = if itype == compiler.context.i8_type() {
-                                compiler.context.i8_type()
+                            let alloc_type = if itype == compiler.context.bool_type() {
+                                compiler.context.bool_type()
                             } else {
                                 compiler.context.i64_type()
                             };
@@ -524,10 +533,6 @@ impl LLVMTypedCodegen for ExprCompare {
                 .build_and(composite_comp, cond, "")
                 .expect("Could not build 'and' for compare.");
         }
-        composite_comp = compiler
-            .builder
-            .build_int_cast_sign_flag(composite_comp, compiler.context.i8_type(), false, "")
-            .unwrap();
         Ok(composite_comp.as_any_value_enum())
     }
 }
@@ -538,11 +543,11 @@ impl LLVMTypedCodegen for ExprUnaryOp {
         compiler: &Compiler<'ctx>,
         types: &HashMap<String, Type>,
     ) -> IRGenResult<'ir> {
-        let i8_type = compiler.context.i8_type();
+        let bool_type = compiler.context.bool_type();
         let true_as_u64 = u64::from(true);
         let false_as_u64 = u64::from(false);
-        let truth_val = i8_type.const_int(true_as_u64, false);
-        let false_val = i8_type.const_int(false_as_u64, false);
+        let truth_val = bool_type.const_int(true_as_u64, false);
+        let false_val = bool_type.const_int(false_as_u64, false);
 
         let i64_type = compiler.context.i64_type();
         let zero = i64_type.const_zero();
@@ -612,8 +617,8 @@ impl LLVMTypedCodegen for ExprBoolOp {
             .map(|val| val.typed_codegen(compiler, types).unwrap())
             .collect::<Vec<_>>();
 
-        let true_val = compiler.context.i8_type().const_int(1, false);
-        let false_val = compiler.context.i8_type().const_zero();
+        let true_val = compiler.context.bool_type().const_int(u64::from(true), false);
+        let false_val = compiler.context.bool_type().const_int(u64::from(false), false);
         let res;
 
         if self.op.is_and() {
@@ -638,7 +643,6 @@ impl LLVMTypedCodegen for ExprBoolOp {
 }
 
 impl LLVMTypedCodegen for ExprCall {
-    // TODO: Refactor to consider general and specific types.
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
@@ -749,10 +753,7 @@ impl LLVMTypedCodegen for ExprName {
                 if let Some(name_ptr) = sym_table.get(name) {
                     let load = compiler
                         .builder
-                        .build_load(
-                            name_ptr.into_pointer_value(),
-                            name,
-                        )
+                        .build_load(name_ptr.into_pointer_value(), name)
                         .expect("Could not load variable.");
                     return Ok(load.as_any_value_enum());
                 }
@@ -794,13 +795,9 @@ impl LLVMTypedCodegen for ExprConstant {
                 }
             }
             Constant::Bool(bool) => {
-                let i8_type = compiler.context.i8_type();
+                let bool_type = compiler.context.bool_type();
                 let bool_val = u64::from(*bool);
-                println!(
-                    "{:?}",
-                    i8_type.const_int(bool_val, false).as_any_value_enum()
-                );
-                Ok(i8_type.const_int(bool_val, false).as_any_value_enum())
+                Ok(bool_type.const_int(bool_val, false).as_any_value_enum())
             }
             Constant::Str(str) => {
                 let str_ptr = compiler

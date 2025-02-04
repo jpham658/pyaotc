@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::format;
-use std::sync::Arc;
 
 use inkwell::types::BasicMetadataTypeEnum;
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
@@ -8,18 +6,17 @@ use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
-    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Operator, OperatorAdd, Stmt, StmtAssign, StmtExpr,
-    StmtFunctionDef, UnaryOp,
+    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
+    UnaryOp,
 };
 
 use crate::compiler::Compiler;
-use crate::compiler_utils::print_fn::build_print_any_fn;
 use crate::compiler_utils::to_any_type::ToAnyType;
 
-use super::any_class_utils::{cast_any_to_struct, get_tag, get_value};
+use super::any_class_utils::{cast_any_to_struct, get_value};
 use super::error::{BackendError, IRGenResult};
 use super::generic_ops::cmp_operators::build_generic_cmp_op::build_generic_cmp_op;
-use super::generic_ops::operators::build_generic_op::{self, build_generic_op};
+use super::generic_ops::operators::build_generic_op::build_generic_op;
 
 pub trait LLVMGenericCodegen {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
@@ -80,17 +77,17 @@ impl LLVMGenericCodegen for StmtFunctionDef {
             .expect("Builder isn't mapped to a basic block?");
 
         let func_name = format!("{}_g", self.name.as_str());
-        let any_type_ptr = compiler.any_type.ptr_type(AddressSpace::default());
+        let obj_ptr = compiler.object_type.ptr_type(AddressSpace::default());
         let any_args: Vec<BasicMetadataTypeEnum<'_>> = self
             .args
             .args
             .clone()
             .into_iter()
-            .map(|_a| any_type_ptr.into())
+            .map(|_a| obj_ptr.into())
             .collect();
 
         // Declare function with Any return type
-        let func_type = any_type_ptr.fn_type(&any_args, false);
+        let func_type = obj_ptr.fn_type(&any_args, false);
         let func_def = compiler
             .module
             .add_function(func_name.as_str(), func_type, None);
@@ -161,15 +158,24 @@ impl LLVMGenericCodegen for StmtAssign {
                     .value
                     .generic_codegen(compiler)
                     .expect("Failed to compute right side of assignment.");
-                // To cast the pointers, we return pointers to all Any structs.
                 let mut sym_table = compiler.sym_table.borrow_mut();
                 let target_ptr = if !sym_table.contains_key(target_name) {
-                    value.into_pointer_value()
+                    // All generic objects are represented as pointers Object*
+                    compiler
+                        .builder
+                        .build_alloca(compiler.object_type.ptr_type(AddressSpace::default()), "")
+                        .expect("Could not create pointer for Object type.")
                 } else {
                     sym_table.get(target_name).unwrap().into_pointer_value()
                 };
+
+                // Value will ALWAYS have type Object*
+                let store = compiler
+                    .builder
+                    .build_store(target_ptr, value.into_pointer_value())
+                    .expect("Could not store Any value.");
                 sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
-                Ok(value.as_any_value_enum())
+                Ok(store.as_any_value_enum())
             }
             _ => Err(BackendError {
                 message: "Left of an assignment must be a variable.",
@@ -279,11 +285,6 @@ impl LLVMGenericCodegen for ExprCompare {
                 .expect("Could not build 'and' for compare.");
         }
 
-        composite_comp = compiler
-            .builder
-            .build_int_cast_sign_flag(composite_comp, compiler.context.i8_type(), false, "")
-            .unwrap();
-
         let res_ptr = compiler
             .builder
             .build_malloc(compiler.any_type, "")
@@ -311,30 +312,15 @@ impl LLVMGenericCodegen for ExprCompare {
 impl LLVMGenericCodegen for ExprUnaryOp {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         let i8_type = compiler.context.i8_type();
-        let true_as_u64 = u64::from(true);
-        let false_as_u64 = u64::from(false);
-        let truth_val = i8_type.const_int(true_as_u64, false);
-        let false_val = i8_type.const_int(false_as_u64, false);
+        let bool_type = compiler.context.bool_type();
+        let truth_val = bool_type.const_int(u64::from(true), false);
+        let false_val = bool_type.const_int(u64::from(false), false);
 
         let i64_type = compiler.context.i64_type();
         let zero = i64_type.const_zero();
 
+        // TODO: Update this with generic operator functions...
         let operand_ptr = self.operand.generic_codegen(compiler)?.into_pointer_value();
-        let operand_tag = get_tag(operand_ptr, compiler);
-
-        println!("{:?}", operand_tag); // TODO: need to update this with runtime compatible code...
-        let operand_ptr = if operand_tag == i8_type.const_int(0, false) {
-            cast_any_to_struct(operand_ptr, compiler.any_bool_type, compiler)
-        } else if operand_tag == i8_type.const_int(1, false) {
-            cast_any_to_struct(operand_ptr, compiler.any_int_type, compiler)
-        } else if operand_tag == i8_type.const_int(2, false) {
-            cast_any_to_struct(operand_ptr, compiler.any_float_type, compiler)
-        } else {
-            return Err(BackendError {
-                message: "Invalid Any type.",
-            });
-        };
-
         let operand = get_value(operand_ptr, compiler).as_any_value_enum();
 
         match (self.op, operand) {
@@ -396,8 +382,14 @@ impl LLVMGenericCodegen for ExprBoolOp {
             .map(|val| val.generic_codegen(compiler).unwrap())
             .collect::<Vec<_>>();
 
-        let true_val = compiler.context.i8_type().const_int(1, false);
-        let false_val = compiler.context.i8_type().const_zero();
+        let true_val = compiler
+            .context
+            .bool_type()
+            .const_int(u64::from(true), false);
+        let false_val = compiler
+            .context
+            .bool_type()
+            .const_int(u64::from(false), false);
         let res;
 
         if self.op.is_and() {
@@ -431,11 +423,7 @@ impl LLVMGenericCodegen for ExprCall {
             .as_str();
         let function;
         if func_name.eq("print") {
-            let print_any_fn = compiler.module.get_function("print_any");
-            match print_any_fn {
-                Some(f) => function = f,
-                None => function = build_print_any_fn(compiler),
-            }
+            function = compiler.module.get_function("print_obj").unwrap();
         } else {
             let generic_fn_name = format!("{}_g", func_name);
             function = compiler
@@ -489,9 +477,12 @@ impl LLVMGenericCodegen for ExprName {
                 }
                 let sym_table = compiler.sym_table.borrow();
                 if let Some(name_ptr) = sym_table.get(name) {
-                    // Delay dereferencing the pointer as far as possible
-                    // to avoid bitcast errors
-                    return Ok(name_ptr.as_any_value_enum());
+                    // TODO: Change after we store ptrs of ptrs in sym table
+                    let load = compiler
+                        .builder
+                        .build_load(name_ptr.into_pointer_value(), "")
+                        .expect("Could not load Object pointer.");
+                    return Ok(load.as_any_value_enum());
                 }
                 Err(BackendError {
                     message: "Variable {name} is not defined.",
@@ -523,10 +514,21 @@ impl LLVMGenericCodegen for ExprConstant {
                 Ok(i64_num.to_any_type(compiler).as_any_value_enum())
             }
             Constant::Bool(bool) => {
-                let bool_val = u64::from(*bool) as i8;
-                Ok(bool_val.to_any_type(compiler).as_any_value_enum())
+                let new_bool_fn = compiler
+                    .module
+                    .get_function("new_bool")
+                    .expect("new_bool has not been declared.");
+                let bool_val = compiler
+                    .context
+                    .bool_type()
+                    .const_int(u64::from(*bool), false);
+                let bool_obj = compiler
+                    .builder
+                    .build_call(new_bool_fn, &[bool_val.into()], "")
+                    .expect("Could not create bool Any object.");
+                Ok(bool_obj.as_any_value_enum())
             }
-            // TODO: Add strings back here when we extend Any type
+            // Constant::Str(str) => {}
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),

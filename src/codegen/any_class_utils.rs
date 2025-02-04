@@ -4,6 +4,10 @@ use inkwell::{
     AddressSpace, IntPredicate,
 };
 
+/**
+ * TODO: GET RID OF THIS!!! IT'S OBSOLETE!!!
+ */
+
 use crate::compiler::Compiler;
 
 /**
