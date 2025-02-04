@@ -1,4 +1,4 @@
-use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, FloatType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue};
 use inkwell::AddressSpace;
 use malachite_bigint;
@@ -481,12 +481,27 @@ impl LLVMTypedCodegen for ExprCompare {
             });
         }
 
+        let f64_type = compiler.context.f64_type();
         for (op, comp) in op_and_comp {
-            if comp.is_vector_value() {
-                return Err(BackendError {
-                    message: "Invalid type for right compare value.",
-                });
+            if comp.is_float_value() {
+                if left.get_type().is_int_type() {
+                    left = compiler
+                        .builder
+                        .build_signed_int_to_float(left.into_int_value(), f64_type, "")
+                        .expect("Could not cast signed int to float.")
+                        .as_any_value_enum();
+                } else {
+                    // Types don't match so false straight away
+                    conditions.push(
+                        compiler
+                            .context
+                            .bool_type()
+                            .const_int(u64::from(false), false),
+                    );
+                    break;
+                }
             }
+
             let new_comp = if left.is_float_value() && !comp.is_float_value() {
                 compiler
                     .builder
@@ -617,8 +632,14 @@ impl LLVMTypedCodegen for ExprBoolOp {
             .map(|val| val.typed_codegen(compiler, types).unwrap())
             .collect::<Vec<_>>();
 
-        let true_val = compiler.context.bool_type().const_int(u64::from(true), false);
-        let false_val = compiler.context.bool_type().const_int(u64::from(false), false);
+        let true_val = compiler
+            .context
+            .bool_type()
+            .const_int(u64::from(true), false);
+        let false_val = compiler
+            .context
+            .bool_type()
+            .const_int(u64::from(false), false);
         let res;
 
         if self.op.is_and() {

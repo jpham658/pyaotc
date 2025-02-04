@@ -10,12 +10,13 @@ use std::path::Path;
 
 use crate::codegen::error::{BackendError, IRGenResult};
 use crate::codegen::generic_codegen::LLVMGenericCodegen;
+use crate::codegen::generic_ops::cmp_operators::g_cmpeq::get_eq_fn_ir;
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
 use crate::type_inference::Type;
 
+// TODO: Move this to separate file
 fn get_prereq_llvm_ir() -> String {
-    r#"
-%struct.Object = type opaque
+    r#"%struct.Object = type opaque
 %struct.HeapObject = type { i32, %union.anon }
 %union.anon = type { i8* }
 
@@ -382,8 +383,7 @@ define dso_local void @print_heap_obj(%struct.HeapObject* noundef %0) #0 {
 21:                                               ; preds = %20, %6
   ret void
 }
-"#
-    .to_string()
+"#.to_string() + &get_eq_fn_ir().to_string()
 }
 #[derive(Debug)]
 pub struct Compiler<'ctx> {

@@ -28,8 +28,7 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-w = True + False
-print(w)
+w = 3 == 3.0
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
@@ -66,8 +65,8 @@ print(w)
                 }
             }
             types_pp(&types);
-            // compiler.compile(&ast, &types);
-            compiler.compile_generically(&ast);
+            compiler.compile(&ast, &types);
+            // compiler.compile_generically(&ast);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);

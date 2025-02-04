@@ -11,6 +11,7 @@ use rustpython_parser::ast::{
 };
 
 use crate::compiler::Compiler;
+use crate::compiler_utils::print_fn::build_print_bool_fn;
 use crate::compiler_utils::to_any_type::ToAnyType;
 
 use super::any_class_utils::{cast_any_to_struct, get_value};
@@ -161,19 +162,33 @@ impl LLVMGenericCodegen for StmtAssign {
                 let mut sym_table = compiler.sym_table.borrow_mut();
                 let target_ptr = if !sym_table.contains_key(target_name) {
                     // All generic objects are represented as pointers Object*
-                    compiler
-                        .builder
-                        .build_alloca(compiler.object_type.ptr_type(AddressSpace::default()), "")
-                        .expect("Could not create pointer for Object type.")
+                    if value.is_int_value() {
+                        compiler
+                            .builder
+                            .build_alloca(compiler.context.bool_type(), "")
+                            .expect("Could not create pointer for bool type.")
+                    } else {
+                        compiler
+                            .builder
+                            .build_alloca(compiler.object_type.ptr_type(AddressSpace::default()), "")
+                            .expect("Could not create pointer for Object type.")
+                    }
                 } else {
                     sym_table.get(target_name).unwrap().into_pointer_value()
                 };
 
-                // Value will ALWAYS have type Object*
-                let store = compiler
-                    .builder
-                    .build_store(target_ptr, value.into_pointer_value())
-                    .expect("Could not store Any value.");
+                // Value will either definitely be a boolean, or Object*
+                let store = if value.is_int_value() {
+                    compiler
+                        .builder
+                        .build_store(target_ptr, value.into_int_value())
+                        .expect("Could not store bool value.")
+                } else {
+                    compiler
+                        .builder
+                        .build_store(target_ptr, value.into_pointer_value())
+                        .expect("Could not store Any value.")
+                };
                 sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
                 Ok(store.as_any_value_enum())
             }
@@ -269,41 +284,18 @@ impl LLVMGenericCodegen for ExprCompare {
             left = llvm_comp.as_any_value_enum();
         }
 
-        let composite_comp_ptr = conditions[0].into_pointer_value();
-        let composite_comp_ptr_as_bool =
-            cast_any_to_struct(composite_comp_ptr, compiler.any_bool_type, compiler);
-        let mut composite_comp = get_value(composite_comp_ptr_as_bool, compiler).into_int_value();
-
+        let mut composite_comp = conditions[0].into_int_value();
+        
         for cond in conditions {
-            let cond_ptr = cond.into_pointer_value();
-            // Results in condition will always be booleans stored in Any structs
-            let cond_ptr_as_bool = cast_any_to_struct(cond_ptr, compiler.any_bool_type, compiler);
-            let cond = get_value(cond_ptr_as_bool, compiler).into_int_value();
+            // Result from comparisons are always booleans, so store them as such
+            let cond = cond.into_int_value();
             composite_comp = compiler
                 .builder
                 .build_and(composite_comp, cond, "")
                 .expect("Could not build 'and' for compare.");
         }
 
-        let res_ptr = compiler
-            .builder
-            .build_malloc(compiler.any_type, "")
-            .expect("Could not perform malloc.");
-        let res_ptr_as_bool = cast_any_to_struct(res_ptr, compiler.any_bool_type, compiler);
-        let res_tag_ptr = compiler
-            .builder
-            .build_struct_gep(res_ptr_as_bool, 0, "")
-            .unwrap();
-        let _ = compiler
-            .builder
-            .build_store(res_tag_ptr, compiler.context.i8_type().const_int(0, false));
-        let res_val_ptr = compiler
-            .builder
-            .build_struct_gep(res_ptr_as_bool, 1, "")
-            .unwrap();
-        let _ = compiler.builder.build_store(res_val_ptr, composite_comp);
-
-        Ok(res_ptr.as_any_value_enum())
+        Ok(composite_comp.as_any_value_enum())
     }
 }
 
@@ -311,7 +303,6 @@ impl LLVMGenericCodegen for ExprCompare {
 // do I even need to wrap in Any?
 impl LLVMGenericCodegen for ExprUnaryOp {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        let i8_type = compiler.context.i8_type();
         let bool_type = compiler.context.bool_type();
         let truth_val = bool_type.const_int(u64::from(true), false);
         let false_val = bool_type.const_int(u64::from(false), false);
@@ -421,7 +412,7 @@ impl LLVMGenericCodegen for ExprCall {
             .expect("You can only call functions...?")
             .id
             .as_str();
-        let function;
+        let mut function;
         if func_name.eq("print") {
             function = compiler.module.get_function("print_obj").unwrap();
         } else {
@@ -453,6 +444,18 @@ impl LLVMGenericCodegen for ExprCall {
                 AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(
                     val.into_pointer_value(),
                 )),
+                AnyValueEnum::IntValue(..) => {
+                    if func_name.eq("print") {
+                        function = if let Some(func) = compiler.module.get_function("print_bool") {
+                            func
+                        } else {
+                            build_print_bool_fn(compiler)
+                        }
+                    };
+                    Some(BasicMetadataValueEnum::IntValue(
+                        val.into_int_value(),
+                    ))
+                },
                 _ => None,
             })
             .collect();

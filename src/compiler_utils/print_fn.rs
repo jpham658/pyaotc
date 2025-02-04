@@ -1,6 +1,3 @@
-use crate::codegen::any_class_utils::{
-    any_is_bool, any_is_float, any_is_int, cast_any_to_struct, get_tag, get_value,
-};
 use crate::codegen::error::{BackendError, IRGenResult};
 use crate::compiler::Compiler;
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FunctionValue};
@@ -40,6 +37,13 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
             }
             AnyValueEnum::PointerValue(ptr) => {
                 // just prints address...
+                if ptr.get_type() == compiler.object_type.ptr_type(AddressSpace::default()) {
+                    let print_obj = compiler.module.get_function("print_obj").unwrap();
+                    let _ = compiler.builder.build_call(print_obj, &[
+                        BasicMetadataValueEnum::PointerValue(*ptr)
+                    ], "");
+                    continue;
+                }
                 string_format.push_str("%p ");
                 llvm_args.push(BasicMetadataValueEnum::PointerValue(*ptr));
             }
@@ -72,7 +76,7 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
  * Function that builds LLVM helper function for printing a boolean value.
  * Used when evaluating `print`
  */
-fn build_print_bool_fn<'a>(compiler: &Compiler<'a>) -> FunctionValue<'a> {
+pub fn build_print_bool_fn<'a>(compiler: &Compiler<'a>) -> FunctionValue<'a> {
     let main_entry = compiler
         .builder
         .get_insert_block()
