@@ -411,21 +411,32 @@ impl LLVMTypedCodegen for StmtIf {
 
         let main = compiler.builder.get_insert_block().unwrap();
         let iftrue = compiler.context.insert_basic_block_after(main, "iftrue");
-        let iffalse = compiler.context.insert_basic_block_after(iftrue, "iffalse");
-        let ifend = compiler.context.insert_basic_block_after(iffalse, "ifend");
+        let iffalse = if self.orelse.is_empty() {
+            None
+        } else {
+            Some(compiler.context.insert_basic_block_after(iftrue, "iffalse"))
+        };
+        let ifend = compiler.context.insert_basic_block_after(iftrue, "ifend");
+        let if_cond_block = if let Some(iffalse_block) = iffalse {
+            iffalse_block
+        } else {
+            ifend
+        };
 
         let branch = compiler
             .builder
-            .build_conditional_branch(test.into_int_value(), iftrue, iffalse)
+            .build_conditional_branch(test.into_int_value(), iftrue, if_cond_block)
             .expect("Could not build if statement branch.");
 
         // iftrue
         let _ = compiler.builder.position_at_end(iftrue);
+        let mut ret_stmt_in_true = false;
         for stmt in &self.body {
             match stmt.typed_codegen(compiler, types) {
                 Err(e) => return Err(e),
                 Ok(ir) => {
                     if stmt.is_return_stmt() {
+                        ret_stmt_in_true = true;
                         match ir {
                             AnyValueEnum::IntValue(i) => {
                                 let _ = compiler.builder.build_return(Some(&i));
@@ -444,34 +455,42 @@ impl LLVMTypedCodegen for StmtIf {
                 }
             }
         }
-        let _ = compiler.builder.build_unconditional_branch(ifend);
+        if(!ret_stmt_in_true) {
+            let _ = compiler.builder.build_unconditional_branch(ifend);
+        }
 
         // iffalse
-        let _ = compiler.builder.position_at_end(iffalse);
-        for stmt in &self.orelse {
-            match stmt.typed_codegen(compiler, types) {
-                Err(e) => return Err(e),
-                Ok(ir) => {
-                    if stmt.is_return_stmt() {
-                        match ir {
-                            AnyValueEnum::IntValue(i) => {
-                                let _ = compiler.builder.build_return(Some(&i));
-                            }
-                            AnyValueEnum::FloatValue(f) => {
-                                let _ = compiler.builder.build_return(Some(&f));
-                            }
-                            AnyValueEnum::PointerValue(p) => {
-                                let _ = compiler.builder.build_return(Some(&p));
-                            }
-                            _ => {
-                                let _ = compiler.builder.build_return(None);
+        if let Some(iffalse_block) = iffalse {
+            let _ = compiler.builder.position_at_end(iffalse_block);
+            let mut ret_stmt_in_iffalse = false;
+            for stmt in &self.orelse {
+                match stmt.generic_codegen(compiler) {
+                    Err(e) => return Err(e),
+                    Ok(ir) => {
+                        if stmt.is_return_stmt() {
+                            ret_stmt_in_iffalse = true;
+                            match ir {
+                                AnyValueEnum::IntValue(i) => {
+                                    let _ = compiler.builder.build_return(Some(&i));
+                                }
+                                AnyValueEnum::FloatValue(f) => {
+                                    let _ = compiler.builder.build_return(Some(&f));
+                                }
+                                AnyValueEnum::PointerValue(p) => {
+                                    let _ = compiler.builder.build_return(Some(&p));
+                                }
+                                _ => {
+                                    let _ = compiler.builder.build_return(None);
+                                }
                             }
                         }
                     }
                 }
             }
+            if !ret_stmt_in_iffalse {
+                let _ = compiler.builder.build_unconditional_branch(ifend);
+            }
         }
-        let _ = compiler.builder.build_unconditional_branch(ifend);
 
         let _ = compiler.builder.position_at_end(ifend);
 

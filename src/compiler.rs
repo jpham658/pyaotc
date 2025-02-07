@@ -3,7 +3,7 @@ use inkwell::types::{BasicMetadataTypeEnum, StructType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use inkwell::{builder::Builder, context::Context, module::Module};
-use rustpython_parser::ast::{CmpOpEq, Stmt};
+use rustpython_parser::ast::Stmt;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,8 +23,12 @@ fn get_prereq_llvm_ir() -> String {
 %union.anon = type { i8* }
 
 declare i8* @malloc(i64 noundef) #1
+declare i64 @strlen(i8* noundef)
+declare i8* @strcpy(i8* noundef, i8* noundef)
+declare i8* @strcat(i8* noundef, i8* noundef)
+declare void @llvm.memset.p0i8.i64(i8* nocapture writeonly, i8, i64, i1 immarg)
 
-@.str = private unnamed_addr constant [5 x i8] c"%ld\0A\00", align 1
+@.str = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
 @.str.1 = private unnamed_addr constant [6 x i8] c"True\0A\00", align 1
 @.str.2 = private unnamed_addr constant [7 x i8] c"False\0A\00", align 1
 @.str.3 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
@@ -266,7 +270,7 @@ define dso_local void @print_int(i32 noundef %0) #0 {
   %2 = alloca i32, align 4
   store i32 %0, i32* %2, align 4
   %3 = load i32, i32* %2, align 4
-  %4 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([5 x i8], [5 x i8]* @.str, i64 0, i64 0), i32 noundef %3)
+  %4 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([4 x i8], [4 x i8]* @.str, i64 0, i64 0), i32 noundef %3)
   ret void
 }
 
@@ -387,10 +391,6 @@ define dso_local void @print_heap_obj(%struct.HeapObject* noundef %0) #0 {
   ret void
 }
 
-declare i64 @strlen(i8*)
-declare i8* @strcpy(i8*, i8*)
-declare i8* @strcat(i8*, i8*)
-
 define i8* @strconcat(i8* %str1, i8* %str2) {
 entry:
   %0 = call i64 @strlen(i8* %str1)
@@ -402,6 +402,92 @@ entry:
   call i8* @strcat(i8* %4, i8* %str2)
   ret i8* %4
 }  
+
+define dso_local i8* @strmult(i8* noundef %0, i32 noundef %1) #0 {
+  %3 = alloca i8*, align 8
+  %4 = alloca i8*, align 8
+  %5 = alloca i32, align 4
+  %6 = alloca i64, align 8
+  %7 = alloca i8*, align 8
+  %8 = alloca i32, align 4
+  store i8* %0, i8** %4, align 8
+  store i32 %1, i32* %5, align 4
+  %9 = load i32, i32* %5, align 4
+  %10 = icmp sle i32 %9, 0
+  br i1 %10, label %14, label %11
+
+11:                                               ; preds = %2
+  %12 = load i8*, i8** %4, align 8
+  %13 = icmp eq i8* %12, null
+  br i1 %13, label %14, label %15
+
+14:                                               ; preds = %11, %2
+  store i8* null, i8** %3, align 8
+  br label %52
+
+15:                                               ; preds = %11
+  %16 = load i8*, i8** %4, align 8
+  %17 = call i64 @strlen(i8* noundef %16) #4
+  store i64 %17, i64* %6, align 8
+  %18 = load i64, i64* %6, align 8
+  %19 = load i32, i32* %5, align 4
+  %20 = sext i32 %19 to i64
+  %21 = mul i64 %18, %20
+  %22 = add i64 %21, 1
+  %23 = call i8* @malloc(i64 noundef %22)
+  store i8* %23, i8** %7, align 8
+  %24 = load i8*, i8** %7, align 8
+  %25 = icmp eq i8* %24, null
+  br i1 %25, label %26, label %27
+
+26:                                               ; preds = %15
+  store i8* null, i8** %3, align 8
+  br label %52
+
+27:                                               ; preds = %15
+  store i32 0, i32* %8, align 4
+  br label %28
+
+28:                                               ; preds = %41, %27
+  %29 = load i32, i32* %8, align 4
+  %30 = load i32, i32* %5, align 4
+  %31 = icmp slt i32 %29, %30
+  br i1 %31, label %32, label %44
+
+32:                                               ; preds = %28
+  %33 = load i8*, i8** %7, align 8
+  %34 = load i32, i32* %8, align 4
+  %35 = sext i32 %34 to i64
+  %36 = load i64, i64* %6, align 8
+  %37 = mul i64 %35, %36
+  %38 = getelementptr inbounds i8, i8* %33, i64 %37
+  %39 = load i8*, i8** %4, align 8
+  %40 = load i64, i64* %6, align 8
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* align 1 %38, i8* align 1 %39, i64 %40, i1 false)
+  br label %41
+
+41:                                               ; preds = %32
+  %42 = load i32, i32* %8, align 4
+  %43 = add nsw i32 %42, 1
+  store i32 %43, i32* %8, align 4
+  br label %28
+
+44:                                               ; preds = %28
+  %45 = load i8*, i8** %7, align 8
+  %46 = load i64, i64* %6, align 8
+  %47 = load i32, i32* %5, align 4
+  %48 = sext i32 %47 to i64
+  %49 = mul i64 %46, %48
+  %50 = getelementptr inbounds i8, i8* %45, i64 %49
+  store i8 0, i8* %50, align 1
+  %51 = load i8*, i8** %7, align 8
+  store i8* %51, i8** %3, align 8
+  br label %52
+
+52:                                               ; preds = %44, %26, %14
+  %53 = load i8*, i8** %3, align 8
+  ret i8* %53
+}
 "#.to_string() + &cmp_op_ir + &op_ir + "; ========================== USER DEFINED FUNCTIONS START HERE ==========================\n"
 }
 #[derive(Debug)]
@@ -427,10 +513,10 @@ impl<'ctx> Compiler<'ctx> {
             .expect("Could not create module from LLVM IR.");
 
         let i8_type = context.i8_type();
-        
+
         let any_type = context.get_struct_type("struct.HeapObject").unwrap();
         let object_type = context.get_struct_type("struct.Object").unwrap(); // Should not fail if context is set up properly.
-        
+
         let any_type_info = create_type_info_hashmap();
 
         Self {

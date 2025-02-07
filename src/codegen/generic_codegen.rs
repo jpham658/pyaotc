@@ -5,7 +5,9 @@ use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
-    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext, ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFunctionDef, StmtIf, UnaryOp
+    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
+    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
+    StmtIf, UnaryOp,
 };
 
 use crate::astutils::GetReturnStmts;
@@ -45,6 +47,7 @@ impl LLVMGenericCodegen for Stmt {
         match self {
             Stmt::Expr(StmtExpr { value, .. }) => value.generic_codegen(compiler),
             Stmt::Assign(assign) => assign.generic_codegen(compiler),
+            Stmt::If(stmtif) => stmtif.generic_codegen(compiler),
             Stmt::Return(return_stmt) => match &return_stmt.value {
                 None => Err(BackendError {
                     message: "Not implemented return by itself yet",
@@ -53,7 +56,7 @@ impl LLVMGenericCodegen for Stmt {
             },
             Stmt::FunctionDef(funcdef) => funcdef.generic_codegen(compiler),
             _ => Err(BackendError {
-                message: "Not implemented yet...",
+                message: "Codegen for statement type not implemented yet...",
             }),
         }
     }
@@ -228,21 +231,32 @@ impl LLVMGenericCodegen for StmtIf {
 
         let main = compiler.builder.get_insert_block().unwrap();
         let iftrue = compiler.context.insert_basic_block_after(main, "iftrue");
-        let iffalse = compiler.context.insert_basic_block_after(iftrue, "iffalse");
-        let ifend = compiler.context.insert_basic_block_after(iffalse, "ifend");
+        let iffalse = if self.orelse.is_empty() {
+            None
+        } else {
+            Some(compiler.context.insert_basic_block_after(iftrue, "iffalse"))
+        };
+        let ifend = compiler.context.insert_basic_block_after(iftrue, "ifend");
+        let if_cond_block = if let Some(iffalse_block) = iffalse {
+            iffalse_block
+        } else {
+            ifend
+        };
 
         let branch = compiler
             .builder
-            .build_conditional_branch(test.into_int_value(), iftrue, iffalse)
+            .build_conditional_branch(test.into_int_value(), iftrue, if_cond_block)
             .expect("Could not build if statement branch.");
 
         // iftrue
         let _ = compiler.builder.position_at_end(iftrue);
+        let mut ret_stmt_in_iftrue = false;
         for stmt in &self.body {
             match stmt.generic_codegen(compiler) {
                 Err(e) => return Err(e),
                 Ok(ir) => {
                     if stmt.is_return_stmt() {
+                        ret_stmt_in_iftrue = true;
                         match ir {
                             AnyValueEnum::IntValue(i) => {
                                 let _ = compiler.builder.build_return(Some(&i));
@@ -258,34 +272,44 @@ impl LLVMGenericCodegen for StmtIf {
                 }
             }
         }
-        let _ = compiler.builder.build_unconditional_branch(ifend);
+
+        if !ret_stmt_in_iftrue {
+            let _ = compiler.builder.build_unconditional_branch(ifend);
+        }
 
         // iffalse
-        let _ = compiler.builder.position_at_end(iffalse);
-        for stmt in &self.orelse {
-            match stmt.generic_codegen(compiler) {
-                Err(e) => return Err(e),
-                Ok(ir) => {
-                    if stmt.is_return_stmt() {
-                        match ir {
-                            AnyValueEnum::IntValue(i) => {
-                                let _ = compiler.builder.build_return(Some(&i));
-                            }
-                            AnyValueEnum::FloatValue(f) => {
-                                let _ = compiler.builder.build_return(Some(&f));
-                            }
-                            AnyValueEnum::PointerValue(p) => {
-                                let _ = compiler.builder.build_return(Some(&p));
-                            }
-                            _ => {
-                                let _ = compiler.builder.build_return(None);
+        if let Some(iffalse_block) = iffalse {
+            let _ = compiler.builder.position_at_end(iffalse_block);
+            let mut ret_stmt_in_iffalse = false;
+            for stmt in &self.orelse {
+                match stmt.generic_codegen(compiler) {
+                    Err(e) => return Err(e),
+                    Ok(ir) => {
+                        if stmt.is_return_stmt() {
+                            ret_stmt_in_iffalse = true;
+                            match ir {
+                                AnyValueEnum::IntValue(i) => {
+                                    let _ = compiler.builder.build_return(Some(&i));
+                                }
+                                AnyValueEnum::FloatValue(f) => {
+                                    let _ = compiler.builder.build_return(Some(&f));
+                                }
+                                AnyValueEnum::PointerValue(p) => {
+                                    let _ = compiler.builder.build_return(Some(&p));
+                                }
+                                _ => {
+                                    let _ = compiler.builder.build_return(None);
+                                }
                             }
                         }
                     }
                 }
             }
+            if !ret_stmt_in_iffalse {
+                let _ = compiler.builder.build_unconditional_branch(ifend);
+            }
         }
-        let _ = compiler.builder.build_unconditional_branch(ifend);
+
 
         let _ = compiler.builder.position_at_end(ifend);
 
@@ -367,16 +391,17 @@ impl LLVMGenericCodegen for ExprCompare {
                     ],
                     "",
                 )
-                .expect(format!("Could not perform generic {:?}.", op).as_str());
-            conditions.push(llvm_comp.as_any_value_enum());
+                .expect(format!("Could not perform generic {:?}.", op).as_str())
+                .as_any_value_enum();
+            conditions.push(llvm_comp.into_int_value());
             left = llvm_comp.as_any_value_enum();
         }
 
-        let mut composite_comp = conditions[0].into_int_value();
+        let mut composite_comp = conditions[0];
 
         for cond in conditions {
             // Result from comparisons are always booleans, so store them as such
-            let cond = cond.into_int_value();
+            let cond = cond;
             composite_comp = compiler
                 .builder
                 .build_and(composite_comp, cond, "")
@@ -619,9 +644,7 @@ impl LLVMGenericCodegen for ExprConstant {
                     .expect("Could not create bool Any object.");
                 Ok(bool_obj.as_any_value_enum())
             }
-            Constant::Str(str) => {
-                Ok(str.to_any_type(compiler).as_any_value_enum()) 
-            }
+            Constant::Str(str) => Ok(str.to_any_type(compiler).as_any_value_enum()),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),

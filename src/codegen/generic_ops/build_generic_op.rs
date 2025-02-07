@@ -1,4 +1,4 @@
-use rustpython_parser::ast::{CmpOp, CmpOpEq, Operator, OperatorAdd};
+use rustpython_parser::ast::{CmpOp, CmpOpEq, Operator, OperatorAdd, OperatorMult, OperatorSub};
 
 /**
  * Trait for every operator to return LLVM IR for
@@ -9,7 +9,7 @@ pub trait GenericOpIR {
 }
 
 /**
- * Function that gets the string representing 
+ * Function that gets the string representing
  * the LLVM IR for all comparison operators.
  */
 pub fn get_generic_cmp_ops_ir() -> String {
@@ -25,14 +25,16 @@ pub fn get_generic_cmp_ops_ir() -> String {
 }
 
 /**
- * Function that gets the string representing 
+ * Function that gets the string representing
  * the LLVM IR for all operators.
  */
 pub fn get_generic_ops_ir() -> String {
-    let ops = Vec::from([Operator::Add]);
+    let ops = Vec::from([Operator::Add, Operator::Sub, Operator::Mult]);
     ops.into_iter()
         .map(|op| match op {
             Operator::Add => OperatorAdd::get_generic_op_ir(),
+            Operator::Sub => OperatorSub::get_generic_op_ir(),
+            Operator::Mult => OperatorMult::get_generic_op_ir(),
             _ => r#""#.to_string(),
         })
         .collect::<Vec<_>>()

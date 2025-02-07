@@ -5,9 +5,7 @@ use crate::codegen::generic_ops::build_generic_op::GenericOpIR;
 impl GenericOpIR for OperatorAdd {
     fn get_generic_op_ir() -> String {
         r#"
-declare void @llvm.memset.p0i8.i64(i8* nocapture writeonly, i8, i64, i1 immarg)
-
-define %struct.Object* @Add(%struct.Object* %0, %struct.Object* %1) {
+define %struct.Object* @Add(%struct.Object* noundef %0, %struct.Object* noundef %1) {
 entry:
   %sum = alloca %struct.Object*, align 8
   %2 = call i1 @object_is_int(%struct.Object* %0)
@@ -147,7 +145,8 @@ handle_str_str:
   br label %merge
 
 unreachable:                                      ; preds = %test_str_str
-  unreachable
+  store %struct.Object* null, %struct.Object** %sum, align 8
+  br label %merge
 
 merge:                                            ; preds = %handle_bool_bool, %handle_bool_float, %handle_float_bool, %handle_bool_int, %handle_int_bool, %handle_float_float, %handle_float_int, %handle_int_float, %handle_int_int
   %sum_obj = load %struct.Object*, %struct.Object** %sum, align 8
