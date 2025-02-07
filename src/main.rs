@@ -1,21 +1,19 @@
 #![deny(elided_lifetimes_in_paths)]
 
 mod astutils;
-mod compiler;
-mod type_inference;
-mod compiler_utils;
 mod codegen;
+mod compiler;
+mod compiler_utils;
+mod type_inference;
 
-use std::{any::Any, collections::HashMap, ffi::CString, hash::{DefaultHasher, Hasher}};
 use compiler::Compiler;
 use inkwell::context::Context;
-use llvm_sys::{core::LLVMCreateMemoryBufferWithMemoryRangeCopy, ir_reader::LLVMParseIRInContext};
 use rustpython_parser::{
     ast::{self, Stmt},
     Parse,
 };
+use std::collections::HashMap;
 use type_inference::{infer_types, Type, TypeEnv, TypeInferrer};
-
 
 fn types_pp(name_to_type: &HashMap<String, Type>) {
     println!("Name                          Type");
@@ -28,7 +26,8 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-w = 3 == 3.0
+w = "Hello world" + "!"
+print(w)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);
@@ -38,7 +37,6 @@ w = 3 == 3.0
 
     match ast::Suite::parse(&python_source, "<embedded>") {
         Ok(ast) => {
-            // right now we are at the top scope level...
             // TODO: figure out how to handle scope in TypeEnv and compiler
             astutils::print_ast(&ast);
             for stmt in &ast {

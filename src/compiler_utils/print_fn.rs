@@ -27,16 +27,15 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                         BasicMetadataValueEnum::IntValue(*i)
                     ], "");
                 } else {
-                    string_format.push_str("%d ");
+                    string_format.push_str("%d\n");
                     llvm_args.push(BasicMetadataValueEnum::IntValue(*i));
                 }
             }
             AnyValueEnum::FloatValue(f) => {
-                string_format.push_str("%f ");
+                string_format.push_str("%f\n");
                 llvm_args.push(BasicMetadataValueEnum::FloatValue(*f));
             }
             AnyValueEnum::PointerValue(ptr) => {
-                // just prints address...
                 if ptr.get_type() == compiler.object_type.ptr_type(AddressSpace::default()) {
                     let print_obj = compiler.module.get_function("print_obj").unwrap();
                     let _ = compiler.builder.build_call(print_obj, &[
@@ -44,7 +43,8 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                     ], "");
                     continue;
                 }
-                string_format.push_str("%p ");
+                // If ptr is not Object*, it's a string
+                string_format.push_str("%s\n");
                 llvm_args.push(BasicMetadataValueEnum::PointerValue(*ptr));
             }
             _ => {
@@ -56,7 +56,6 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
         }
     }
 
-    string_format.push_str("\n");
     let global_string_format = compiler
         .builder
         .build_global_string_ptr(&string_format, "format_string")

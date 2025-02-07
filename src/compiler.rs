@@ -3,22 +3,26 @@ use inkwell::types::{BasicMetadataTypeEnum, StructType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use inkwell::{builder::Builder, context::Context, module::Module};
-use rustpython_parser::ast::Stmt;
+use rustpython_parser::ast::{CmpOpEq, Stmt};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
 use crate::codegen::error::{BackendError, IRGenResult};
 use crate::codegen::generic_codegen::LLVMGenericCodegen;
-use crate::codegen::generic_ops::cmp_operators::g_cmpeq::get_eq_fn_ir;
+use crate::codegen::generic_ops::build_generic_op::{get_generic_cmp_ops_ir, get_generic_ops_ir};
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
 use crate::type_inference::Type;
 
 // TODO: Move this to separate file
 fn get_prereq_llvm_ir() -> String {
+    let cmp_op_ir = get_generic_cmp_ops_ir();
+    let op_ir = get_generic_ops_ir();
     r#"%struct.Object = type opaque
 %struct.HeapObject = type { i32, %union.anon }
 %union.anon = type { i8* }
+
+declare i8* @malloc(i64 noundef) #1
 
 @.str = private unnamed_addr constant [5 x i8] c"%ld\0A\00", align 1
 @.str.1 = private unnamed_addr constant [6 x i8] c"True\0A\00", align 1
@@ -229,7 +233,6 @@ define dso_local %struct.Object* @new_str(i8* noundef %0) #0 {
   ret %struct.Object* %15
 }
 
-declare i8* @malloc(i64 noundef) #1
 
 ; Function Attrs: argmemonly nofree nounwind willreturn
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8* noalias nocapture writeonly, i8* noalias nocapture readonly, i64, i1 immarg) #2
@@ -383,7 +386,23 @@ define dso_local void @print_heap_obj(%struct.HeapObject* noundef %0) #0 {
 21:                                               ; preds = %20, %6
   ret void
 }
-"#.to_string() + &get_eq_fn_ir().to_string()
+
+declare i64 @strlen(i8*)
+declare i8* @strcpy(i8*, i8*)
+declare i8* @strcat(i8*, i8*)
+
+define i8* @strconcat(i8* %str1, i8* %str2) {
+entry:
+  %0 = call i64 @strlen(i8* %str1)
+  %1 = call i64 @strlen(i8* %str2)
+  %2 = add i64 %0, %1
+  %3 = add i64 %2, 1
+  %4 = call i8* @malloc(i64 %3)
+  call i8* @strcpy(i8* %4, i8* %str1)
+  call i8* @strcat(i8* %4, i8* %str2)
+  ret i8* %4
+}  
+"#.to_string() + &cmp_op_ir + &op_ir + "; ========================== USER DEFINED FUNCTIONS START HERE ==========================\n"
 }
 #[derive(Debug)]
 pub struct Compiler<'ctx> {
@@ -394,12 +413,6 @@ pub struct Compiler<'ctx> {
     pub sym_table_as_any: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
     pub func_args: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
     pub any_type: StructType<'ctx>,
-
-    // TODO: Replace this with tagged pointer, store type at end
-    pub any_bool_type: StructType<'ctx>,  // Denoted with 0
-    pub any_int_type: StructType<'ctx>,   // Denoted with 1
-    pub any_float_type: StructType<'ctx>, // Denoted with 2
-
     pub any_type_info: HashMap<String, TypeInfo>,
     pub object_type: StructType<'ctx>,
 }
@@ -407,9 +420,6 @@ pub struct Compiler<'ctx> {
 impl<'ctx> Compiler<'ctx> {
     pub fn new(context: &'ctx Context) -> Self {
         let builder = context.create_builder();
-        // TODO: Make this work if you can?
-        // Otherwise, just keep going with the builder stuff.
-        //
         let prereq_llvm_ir = get_prereq_llvm_ir();
         let mem_buffer = MemoryBuffer::create_from_memory_range_copy(prereq_llvm_ir.as_bytes(), "");
         let module = context
@@ -417,23 +427,10 @@ impl<'ctx> Compiler<'ctx> {
             .expect("Could not create module from LLVM IR.");
 
         let i8_type = context.i8_type();
-
-        // let union_any_val_type =
-        //     context.struct_type(&[i8_type.ptr_type(AddressSpace::default()).into()], false);
-        // // TODO: Rename to any_obj when refactoring code
-        // let any_type = context.struct_type(&[i8_type.into(), union_any_val_type.into()], false);
-
-        let union_any_val_type = context.get_struct_type("union.anon").unwrap();
+        
         let any_type = context.get_struct_type("struct.HeapObject").unwrap();
         let object_type = context.get_struct_type("struct.Object").unwrap(); // Should not fail if context is set up properly.
-
-        // TODO: Refactor, there's gotta be a better way to do this.
-        // TODO: Remove this when we fully implement tagged pointers approach with heap objects.
-        let any_bool_type = context.struct_type(&[i8_type.into(), i8_type.into()], false);
-        let any_int_type = context.struct_type(&[i8_type.into(), context.i64_type().into()], false);
-        let any_float_type =
-            context.struct_type(&[i8_type.into(), context.f64_type().into()], false);
-
+        
         let any_type_info = create_type_info_hashmap();
 
         Self {
@@ -444,9 +441,6 @@ impl<'ctx> Compiler<'ctx> {
             sym_table_as_any: RefCell::new(HashMap::new()),
             func_args: RefCell::new(HashMap::new()),
             any_type,
-            any_bool_type,
-            any_int_type,
-            any_float_type,
             any_type_info,
             object_type,
         }
@@ -454,7 +448,7 @@ impl<'ctx> Compiler<'ctx> {
 
     pub fn compile(&self, ast: &[Stmt], types: &HashMap<String, Type>) {
         let i32_type = self.context.i32_type();
-        self.setup_compiler();
+        // self.setup_compiler();
 
         let main = self
             .module
@@ -502,7 +496,7 @@ impl<'ctx> Compiler<'ctx> {
     // it's just way slower, and way uglier
     pub fn compile_generically(&self, ast: &[Stmt]) {
         let i32_type = self.context.i32_type();
-        self.setup_compiler();
+        // self.setup_compiler();
 
         let main = self
             .module
@@ -527,7 +521,7 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_return(Some(&i32_type.const_int(0, false)));
 
-        self.dump_module();
+        // self.dump_module();
 
         let output = Path::new("outputs/output.ll");
 

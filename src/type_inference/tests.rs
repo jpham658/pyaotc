@@ -20,7 +20,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_literal() {
-        let env = TypeEnv::new();
+        let mut env = TypeEnv::new();
         let lit = ExprConstant {
             range: DEFAULT_RANGE,
             kind: None,
@@ -31,7 +31,7 @@ mod inferrer_tests {
         let expected_res = (Sub::new(), Type::ConcreteType(ConcreteValue::Bool));
         assert_eq!(
             Ok(expected_res),
-            type_inferrer.infer_expression(&env, &expr)
+            type_inferrer.infer_expression(&mut env, &expr)
         );
     }
 
@@ -52,7 +52,7 @@ mod inferrer_tests {
             id: Identifier::new("x"),
         };
         let expr = Expr::Name(name);
-        let res = type_inferrer.infer_expression(&env, &expr);
+        let res = type_inferrer.infer_expression(&mut env, &expr);
 
         match res {
             Ok(typ) => {
@@ -101,7 +101,7 @@ mod inferrer_tests {
         };
 
         let (subs, inferred_type) = type_inferrer
-            .infer_call(&env, &call)
+            .infer_call(&mut env, &call)
             .expect("Call should be valid.");
 
         assert!(subs.len() != 0);
@@ -151,7 +151,7 @@ mod inferrer_tests {
         };
 
         let (subs, inferred_type) = type_inferencer
-            .infer_call(&env, &call)
+            .infer_call(&mut env, &call)
             .expect("Call should be valid.");
 
         assert!(subs.len() != 0);
@@ -200,7 +200,7 @@ mod inferrer_tests {
             keywords: vec![],
         };
 
-        let result = type_inferencer.infer_call(&env, &call);
+        let result = type_inferencer.infer_call(&mut env, &call);
 
         assert!(result.is_err());
     }
@@ -208,7 +208,7 @@ mod inferrer_tests {
     #[test]
     fn test_infer_function() {
         let mut type_inferrer = TypeInferrer::new();
-        let env = TypeEnv::new();
+        let mut env = TypeEnv::new();
         let args = generate_func_args(&["x"]);
         let return_stmt = Expr::BinOp(ExprBinOp {
             range: DEFAULT_RANGE,
@@ -226,7 +226,7 @@ mod inferrer_tests {
         });
         let body: Vec<Stmt> = vec![Stmt::Return(StmtReturn {
             range: DEFAULT_RANGE,
-            value: Some(Box::new(return_stmt)),
+            value: Some(Box::new(return_stmt.clone())),
         })];
 
         // def increment(x):
@@ -235,15 +235,19 @@ mod inferrer_tests {
             range: DEFAULT_RANGE,
             name: Identifier::new("increment"),
             args: Box::new(args),
-            body: body,
+            body: body.clone(),
             decorator_list: vec![],
             returns: None,
             type_comment: None,
             type_params: vec![],
         };
+        let ret_stmts = vec![StmtReturn {
+            range: DEFAULT_RANGE,
+            value: Some(Box::new(return_stmt)),
+        }];
 
         let (subs, inferred_type) = type_inferrer
-            .infer_function(&env, &func_def)
+            .infer_function(&mut env, &func_def, ret_stmts)
             .expect("Funcdef shouldn't cause an error.");
 
         let expected_type = Type::FuncType(FuncTypeValue {
@@ -258,8 +262,8 @@ mod inferrer_tests {
     #[test]
     fn test_infer_function_with_no_args() {
         let mut type_inferrer = TypeInferrer::new();
-        let env = TypeEnv::new();
-        let body: Vec<Stmt> = vec![Stmt::Return(StmtReturn {
+        let mut env = TypeEnv::new();
+        let body = vec![Stmt::Return(StmtReturn {
             range: DEFAULT_RANGE,
             value: None,
         })];
@@ -276,9 +280,13 @@ mod inferrer_tests {
             type_comment: None,
             type_params: vec![],
         };
+        let ret_stmts = vec![StmtReturn {
+            range: DEFAULT_RANGE,
+            value: None,
+        }];
 
         let (sub, inferred_type) = type_inferrer
-            .infer_function(&env, &func_def)
+            .infer_function(&mut env, &func_def, ret_stmts)
             .expect("Funcdef should not cause an error.");
 
         let expected_type = Type::FuncType(FuncTypeValue {
@@ -293,7 +301,7 @@ mod inferrer_tests {
     #[test]
     fn test_infer_function_with_multiple_args() {
         let mut type_inferrer = TypeInferrer::new();
-        let env = TypeEnv::new();
+        let mut env = TypeEnv::new();
         let args = generate_func_args(&["x", "y"]);
         let binop_right = Expr::BinOp(ExprBinOp {
             range: DEFAULT_RANGE,
@@ -319,9 +327,9 @@ mod inferrer_tests {
             op: Operator::Add,
             right: Box::new(binop_right)
         });
-        let body: Vec<Stmt> = vec![Stmt::Return(StmtReturn {
+        let body = vec![Stmt::Return(StmtReturn {
             range: DEFAULT_RANGE,
-            value: Some(Box::new(return_stmt)),
+            value: Some(Box::new(return_stmt.clone())),
         })];
 
         // TODO: for some generic function def add(x,y): return x + y,
@@ -339,8 +347,12 @@ mod inferrer_tests {
             type_comment: None,
             type_params: vec![],
         };
+        let ret_stmts = vec![StmtReturn {
+            range: DEFAULT_RANGE,
+            value: Some(Box::new(return_stmt)),
+        }];
 
-        let (sub, inferred_type) = type_inferrer.infer_function(&env, &func_def)
+        let (sub, inferred_type) = type_inferrer.infer_function(&mut env, &func_def, ret_stmts)
             .expect("Funcdef shouldn't cause an error.");
         let expected_type = Type::FuncType(
             FuncTypeValue { 
@@ -363,7 +375,7 @@ mod inferrer_tests {
     #[test]
     fn test_infer_function_with_no_return() {
         let mut type_inferrer = TypeInferrer::new();
-        let env = TypeEnv::new();
+        let mut env = TypeEnv::new();
         let args = generate_func_args(&["x"]);
         let binop = Expr::BinOp(ExprBinOp {
             range: DEFAULT_RANGE,
@@ -396,8 +408,9 @@ mod inferrer_tests {
             type_comment: None,
             type_params: vec![],
         };
-
-        let (sub, inferred_type) = type_inferrer.infer_function(&env, &func_def)
+        let ret_stmts = Vec::new();
+    
+        let (sub, inferred_type) = type_inferrer.infer_function(&mut env, &func_def, ret_stmts)
             .expect("Funcdef shouldn't cause an error.");
         let expected_type = Type::FuncType(
             FuncTypeValue { 

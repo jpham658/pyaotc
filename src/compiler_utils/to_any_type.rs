@@ -46,3 +46,25 @@ impl ToAnyType for f64 {
         float_obj.into_pointer_value()
     }
 }
+
+impl ToAnyType for String {
+    fn to_any_type<'a>(&self, compiler: &Compiler<'a>) -> PointerValue<'a> {
+        let new_str_fn = compiler
+        .module
+        .get_function("new_str")
+        .expect("new_str has not been declared.");
+
+        let str_ptr = compiler
+                    .builder
+                    .build_global_string_ptr(self, "")
+                    .expect("Could not create global string ptr for {str}.")
+                    .as_pointer_value();
+        let str_obj = compiler
+            .builder
+            .build_call(new_str_fn, &[str_ptr.into()], "")
+            .expect("Could not create float Any object.")
+            .as_any_value_enum();
+
+            str_obj.into_pointer_value()
+    }
+}

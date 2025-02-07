@@ -1,12 +1,16 @@
 use std::{
     any::Any,
+    clone,
     collections::{HashMap, HashSet},
     hash::Hash,
 };
 
 use rustpython_parser::ast::{
-    located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, Stmt, StmtExpr, StmtFunctionDef, StmtReturn
+    located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, Stmt, StmtExpr, StmtFunctionDef,
+    StmtIf, StmtReturn,
 };
+
+use crate::astutils::GetReturnStmts;
 
 //  ====================================================
 //                      ERROR TYPES
@@ -124,8 +128,12 @@ impl TypeInferrer {
         // func_name is always gonna have a scheme returned
         let scheme_type1;
 
-        match type1 {
-            Type::Scheme(scheme) => scheme_type1 = scheme,
+        match &type1 {
+            Type::Scheme(scheme) => match &*scheme.type_name {
+                Type::ConcreteType(..) => return Ok((sub1, type1.clone())),
+                Type::TypeVar(..) => return Ok((sub1, *scheme.type_name.clone())),
+                _ => scheme_type1 = scheme,
+            },
             _ => {
                 return Err(InferenceError {
                     message: "Funcname should have scheme type.".to_string(),
@@ -137,8 +145,8 @@ impl TypeInferrer {
         let mut arg_types = Vec::new();
 
         for arg in &call.args {
-            let new_env = apply_to_type_env(&composite_subs, env);
-            let (sub_arg, arg_type) = self.infer_expression(&new_env, arg)?;
+            let mut new_env = apply_to_type_env(&composite_subs, env);
+            let (sub_arg, arg_type) = self.infer_expression(&mut new_env, arg)?;
             composite_subs = compose_subs(&composite_subs, &sub_arg);
             arg_types.push(arg_type);
         }
@@ -158,9 +166,10 @@ impl TypeInferrer {
                     })
                 });
 
-        let applied_type1 = &apply(&composite_subs, &scheme_type1.type_name);
-        let resultant_sub = unify(applied_type1, &expected_func_type)?;
-
+        let applied_type1 = apply(&composite_subs, &scheme_type1.type_name);
+        let resultant_sub = match (&applied_type1, &expected_func_type) {
+            _ => unify(&applied_type1, &expected_func_type)?,
+        };
         let final_subs = compose_subs(&resultant_sub, &composite_subs);
         let final_return_type = apply(&final_subs, &return_type);
         Ok((final_subs, final_return_type))
@@ -169,7 +178,12 @@ impl TypeInferrer {
     /**
      * Helper to infer the types of a given function definition.
      */
-    pub fn infer_function(&mut self, env: &TypeEnv, func: &StmtFunctionDef) -> TypeInferenceRes {
+    pub fn infer_function(
+        &mut self,
+        env: &TypeEnv,
+        func: &StmtFunctionDef,
+        return_stmts: Vec<StmtReturn>,
+    ) -> TypeInferenceRes {
         let args = &func.args.args;
         let arg_types = args
             .iter()
@@ -194,34 +208,22 @@ impl TypeInferrer {
         for stmt in &func.body {
             let (sub, _) = self.infer_stmt(&mut extended_env, stmt)?;
             subs = compose_subs(&subs, &sub);
+            extended_env = apply_to_type_env(&subs, &extended_env);
         }
-
-        let return_stmts = &func
-            .body
-            .iter()
-            .filter(|stmt| stmt.is_return_stmt())
-            .collect::<Vec<_>>();
 
         let return_type: (Sub, Type);
 
         if !return_stmts.is_empty() {
             // assume all return stmts return same type for now
-            if let Some(StmtReturn {
-                value: return_stmt, ..
-            }) = return_stmts[0].as_return_stmt()
-            {
-                match return_stmt {
-                    None => return_type = (Sub::new(), Type::ConcreteType(ConcreteValue::None)),
-                    Some(expr) => match self.infer_expression(&extended_env, &*expr) {
-                        Ok(expr_type) => return_type = expr_type,
-                        Err(e) => return Err(e),
+            match &return_stmts[0].value {
+                None => return_type = (Sub::new(), Type::ConcreteType(ConcreteValue::None)),
+                Some(expr) => match self.infer_expression(&mut extended_env, &*expr) {
+                    Ok((sub, inferred_type)) => match inferred_type {
+                        Type::Scheme(scheme) => return_type = (sub, *scheme.type_name),
+                        _ => return_type = (sub, inferred_type),
                     },
-                }
-            } else {
-                return Err(InferenceError {
-                    message: "Return statements with non-expression statement not implemented yet."
-                        .to_string(),
-                });
+                    Err(e) => return Err(e),
+                },
             }
         } else {
             return_type = (Sub::new(), Type::ConcreteType(ConcreteValue::None));
@@ -268,7 +270,6 @@ impl TypeInferrer {
                 let resultant_type = match (left_type, right_type) {
                     (Type::Scheme(Scheme { type_name, .. }), typ)
                     | (typ, Type::Scheme(Scheme { type_name, .. })) => {
-                        // Unify scheme type with given type
                         let unifier = unify(&type_name, &typ)?;
                         composite_subs = compose_subs(&composite_subs, &unifier);
                         typ
@@ -322,11 +323,34 @@ impl TypeInferrer {
                 }
             }
             Expr::Call(call) => self.infer_call(env, call),
-            Expr::BoolOp(..) | Expr::Compare(..) => Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Bool))),
+            Expr::BoolOp(bop) => {
+                // TODO: consider types of bop -> although might be a bit more difficult considering
+                // there aren't really predictable patterns apart from operands are truthy/falsy
+                Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Bool)))
+            }
+            Expr::Compare(cmp) => {
+                let (left_sub, mut left_type) = self.infer_expression(env, &*cmp.left)?;
+                let mut composed_sub = left_sub;
+                for comparator in &cmp.comparators {
+                    let (comparator_sub, comparator_type) =
+                        self.infer_expression(env, comparator)?;
+
+                    let unified_sub = match left_type.clone() {
+                        Type::Scheme(scheme) => unify(&scheme.type_name, &comparator_type)?,
+                        _ => unify(&left_type, &comparator_type)?,
+                    };
+                    composed_sub = compose_subs(&composed_sub, &unified_sub);
+                }
+
+                // The result of a comparison is always a bool
+                Ok((composed_sub, Type::ConcreteType(ConcreteValue::Bool)))
+            }
             Expr::UnaryOp(uop) => {
                 let inferred_type = match uop.op {
-                    UnaryOp::UAdd | UnaryOp::USub | UnaryOp::Invert => Type::ConcreteType(ConcreteValue::Int),
-                    UnaryOp::Not => Type::ConcreteType(ConcreteValue::Bool)
+                    UnaryOp::UAdd | UnaryOp::USub | UnaryOp::Invert => {
+                        Type::ConcreteType(ConcreteValue::Int)
+                    }
+                    UnaryOp::Not => Type::ConcreteType(ConcreteValue::Bool),
                 };
                 Ok((Sub::new(), inferred_type))
             }
@@ -361,7 +385,20 @@ impl TypeInferrer {
                 Ok((rhs_sub, Type::Scheme(general_type)))
             }
             Stmt::FunctionDef(funcdef) => {
-                let func_type = self.infer_function(env, funcdef);
+                // Add function name to env in case it is tail recursive
+                let fn_name = funcdef.name.as_str();
+                let mut new_env = env.clone();
+                new_env.insert(
+                    fn_name.to_string(),
+                    Scheme {
+                        type_name: Box::new(Type::TypeVar(TypeVar(
+                            self.fresh_var_generator.next(),
+                        ))),
+                        bounded_vars: HashSet::new(),
+                    },
+                );
+                let return_stmts = funcdef.clone().get_return_stmts();
+                let func_type = self.infer_function(&new_env, funcdef, return_stmts);
                 match &func_type {
                     Ok(pair) => {
                         let generalised_functype = generalise(&pair.1, env);
@@ -370,6 +407,26 @@ impl TypeInferrer {
                     }
                     Err(_) => func_type,
                 }
+            }
+            Stmt::If(StmtIf {
+                body, orelse, test, ..
+            }) => {
+                let (inferred_test_sub, _) = self.infer_expression(env, test)?;
+                let mut new_env = apply_to_type_env(&inferred_test_sub, env);
+                let mut inferred_body_and_or_else = body
+                    .into_iter()
+                    .map(|stmt| self.infer_stmt(&mut new_env, stmt).unwrap())
+                    .collect::<Vec<_>>();
+                let inferred_or_else = orelse
+                    .into_iter()
+                    .map(|stmt| self.infer_stmt(&mut new_env, stmt).unwrap())
+                    .collect::<Vec<_>>();
+                inferred_body_and_or_else.extend(inferred_or_else);
+                let composed_sub = inferred_body_and_or_else
+                    .into_iter()
+                    .map(|(sub, _)| sub)
+                    .fold(inferred_test_sub, |acc, sub| compose_subs(&acc, &sub));
+                Ok((composed_sub, Type::ConcreteType(ConcreteValue::None)))
             }
             Stmt::Expr(StmtExpr { value, .. }) => self.infer_expression(env, &**value),
             Stmt::Return(StmtReturn { value, .. }) => match value {
@@ -603,6 +660,8 @@ pub fn unify(t1: &Type, t2: &Type) -> Result<Sub, InferenceError> {
 
             Ok(compose_subs(&sub1, &sub2))
         }
+        (Type::Scheme(Scheme { type_name, .. }), typ)
+        | (typ, Type::Scheme(Scheme { type_name, .. })) => unify(type_name, typ),
         (Type::TypeVar(TypeVar(var)), typ) | (typ, Type::TypeVar(TypeVar(var))) => {
             bind_type_var(var, typ)
         }

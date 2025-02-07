@@ -1,23 +1,19 @@
 use std::collections::HashMap;
 
-use inkwell::types::BasicMetadataTypeEnum;
+use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, IntType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
-    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
-    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
-    UnaryOp,
+    Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext, ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFunctionDef, StmtIf, UnaryOp
 };
 
+use crate::astutils::GetReturnStmts;
 use crate::compiler::Compiler;
-use crate::compiler_utils::print_fn::build_print_bool_fn;
 use crate::compiler_utils::to_any_type::ToAnyType;
 
-use super::any_class_utils::{cast_any_to_struct, get_value};
+use super::any_class_utils::get_value;
 use super::error::{BackendError, IRGenResult};
-use super::generic_ops::cmp_operators::build_generic_cmp_op::build_generic_cmp_op;
-use super::generic_ops::operators::build_generic_op::build_generic_op;
 
 pub trait LLVMGenericCodegen {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
@@ -28,12 +24,7 @@ impl LLVMGenericCodegen for ExprBinOp {
         let left = self.left.generic_codegen(compiler)?;
         let right = self.right.generic_codegen(compiler)?;
         let g_op_fn_name = format!("{:?}", self.op);
-        let g_op_opt = compiler.module.get_function(&g_op_fn_name);
-        let g_op_fn = if let Some(fn_val) = g_op_opt {
-            fn_val
-        } else {
-            build_generic_op(&self.op, compiler).expect("Could not build generic op function.")
-        };
+        let g_op_fn = compiler.module.get_function(&g_op_fn_name).unwrap();
         let g_op_call = compiler
             .builder
             .build_call(
@@ -78,17 +69,32 @@ impl LLVMGenericCodegen for StmtFunctionDef {
             .expect("Builder isn't mapped to a basic block?");
 
         let func_name = format!("{}_g", self.name.as_str());
-        let obj_ptr = compiler.object_type.ptr_type(AddressSpace::default());
+        let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+        let void_type = compiler.context.void_type();
+        let bool_type = compiler.context.bool_type();
         let any_args: Vec<BasicMetadataTypeEnum<'_>> = self
             .args
             .args
             .clone()
             .into_iter()
-            .map(|_a| obj_ptr.into())
+            .map(|_a| obj_ptr_type.into())
             .collect();
 
         // Declare function with Any return type
-        let func_type = obj_ptr.fn_type(&any_args, false);
+        // -- TODO: Return bool type if we know that the type will be bool (i.e. we have a compare)? --
+        let return_stmts = self.clone().get_return_stmts();
+        let func_type = if return_stmts.is_empty() {
+            void_type.fn_type(&any_args, false)
+        } else {
+            let stmt_ret = &return_stmts[0];
+            match &stmt_ret.value {
+                None => void_type.fn_type(&any_args, false),
+                Some(expr) => match **expr {
+                    Expr::Compare(..) | Expr::BoolOp(..) => bool_type.fn_type(&any_args, false),
+                    _ => obj_ptr_type.fn_type(&any_args, false),
+                },
+            }
+        };
         let func_def = compiler
             .module
             .add_function(func_name.as_str(), func_type, None);
@@ -135,12 +141,26 @@ impl LLVMGenericCodegen for StmtFunctionDef {
         if return_stmts.is_empty() {
             let _ = compiler.builder.build_return(None);
         } else {
-            let _ = compiler
-                .builder
-                .build_return(Some(&return_stmts[0].into_pointer_value()));
+            match return_stmts[0].get_type() {
+                // TODO: Figure out if I should just return a boolean here...
+                AnyTypeEnum::IntType(..) => {
+                    let _ = compiler
+                        .builder
+                        .build_return(Some(&return_stmts[0].into_int_value()));
+                }
+                AnyTypeEnum::VoidType(..) => {
+                    let _ = compiler.builder.build_return(None);
+                }
+                _ => {
+                    let _ = compiler
+                        .builder
+                        .build_return(Some(&return_stmts[0].into_pointer_value()));
+                }
+            }
         }
 
         compiler.builder.position_at_end(main_entry);
+        println!("{:?}", main_entry);
         {
             let mut func_args = compiler.func_args.borrow_mut();
             func_args.clear();
@@ -170,7 +190,10 @@ impl LLVMGenericCodegen for StmtAssign {
                     } else {
                         compiler
                             .builder
-                            .build_alloca(compiler.object_type.ptr_type(AddressSpace::default()), "")
+                            .build_alloca(
+                                compiler.object_type.ptr_type(AddressSpace::default()),
+                                "",
+                            )
                             .expect("Could not create pointer for Object type.")
                     }
                 } else {
@@ -196,6 +219,77 @@ impl LLVMGenericCodegen for StmtAssign {
                 message: "Left of an assignment must be a variable.",
             }),
         }
+    }
+}
+
+impl LLVMGenericCodegen for StmtIf {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        let test = self.test.generic_codegen(compiler)?;
+
+        let main = compiler.builder.get_insert_block().unwrap();
+        let iftrue = compiler.context.insert_basic_block_after(main, "iftrue");
+        let iffalse = compiler.context.insert_basic_block_after(iftrue, "iffalse");
+        let ifend = compiler.context.insert_basic_block_after(iffalse, "ifend");
+
+        let branch = compiler
+            .builder
+            .build_conditional_branch(test.into_int_value(), iftrue, iffalse)
+            .expect("Could not build if statement branch.");
+
+        // iftrue
+        let _ = compiler.builder.position_at_end(iftrue);
+        for stmt in &self.body {
+            match stmt.generic_codegen(compiler) {
+                Err(e) => return Err(e),
+                Ok(ir) => {
+                    if stmt.is_return_stmt() {
+                        match ir {
+                            AnyValueEnum::IntValue(i) => {
+                                let _ = compiler.builder.build_return(Some(&i));
+                            }
+                            AnyValueEnum::PointerValue(p) => {
+                                let _ = compiler.builder.build_return(Some(&p));
+                            }
+                            _ => {
+                                let _ = compiler.builder.build_return(None);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let _ = compiler.builder.build_unconditional_branch(ifend);
+
+        // iffalse
+        let _ = compiler.builder.position_at_end(iffalse);
+        for stmt in &self.orelse {
+            match stmt.generic_codegen(compiler) {
+                Err(e) => return Err(e),
+                Ok(ir) => {
+                    if stmt.is_return_stmt() {
+                        match ir {
+                            AnyValueEnum::IntValue(i) => {
+                                let _ = compiler.builder.build_return(Some(&i));
+                            }
+                            AnyValueEnum::FloatValue(f) => {
+                                let _ = compiler.builder.build_return(Some(&f));
+                            }
+                            AnyValueEnum::PointerValue(p) => {
+                                let _ = compiler.builder.build_return(Some(&p));
+                            }
+                            _ => {
+                                let _ = compiler.builder.build_return(None);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let _ = compiler.builder.build_unconditional_branch(ifend);
+
+        let _ = compiler.builder.position_at_end(ifend);
+
+        Ok(branch.as_any_value_enum())
     }
 }
 
@@ -262,13 +356,7 @@ impl LLVMGenericCodegen for ExprCompare {
                 });
             }
             let g_cmpop_fn_name = format!("{:?}", op);
-            let g_cmpop_opt = compiler.module.get_function(&g_cmpop_fn_name);
-            let g_op_fn = if let Some(fn_val) = g_cmpop_opt {
-                fn_val
-            } else {
-                build_generic_cmp_op(&op, compiler)
-                    .expect("Could not build generic cmp-op function.")
-            };
+            let g_op_fn = compiler.module.get_function(&g_cmpop_fn_name).unwrap();
             let llvm_comp = compiler
                 .builder
                 .build_call(
@@ -285,7 +373,7 @@ impl LLVMGenericCodegen for ExprCompare {
         }
 
         let mut composite_comp = conditions[0].into_int_value();
-        
+
         for cond in conditions {
             // Result from comparisons are always booleans, so store them as such
             let cond = cond.into_int_value();
@@ -412,7 +500,7 @@ impl LLVMGenericCodegen for ExprCall {
             .expect("You can only call functions...?")
             .id
             .as_str();
-        let mut function;
+        let function;
         if func_name.eq("print") {
             function = compiler.module.get_function("print_obj").unwrap();
         } else {
@@ -444,18 +532,18 @@ impl LLVMGenericCodegen for ExprCall {
                 AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(
                     val.into_pointer_value(),
                 )),
-                AnyValueEnum::IntValue(..) => {
-                    if func_name.eq("print") {
-                        function = if let Some(func) = compiler.module.get_function("print_bool") {
-                            func
-                        } else {
-                            build_print_bool_fn(compiler)
-                        }
-                    };
-                    Some(BasicMetadataValueEnum::IntValue(
-                        val.into_int_value(),
+                AnyValueEnum::IntValue(i) => {
+                    // Shouldn't fail bc it was in our setup IR!
+                    let new_bool = compiler.module.get_function("new_bool").unwrap();
+                    let bool_obj = compiler
+                        .builder
+                        .build_call(new_bool, &[i.into()], "")
+                        .expect("Could not call new_bool.")
+                        .as_any_value_enum();
+                    Some(BasicMetadataValueEnum::PointerValue(
+                        bool_obj.into_pointer_value(),
                     ))
-                },
+                }
                 _ => None,
             })
             .collect();
@@ -531,7 +619,9 @@ impl LLVMGenericCodegen for ExprConstant {
                     .expect("Could not create bool Any object.");
                 Ok(bool_obj.as_any_value_enum())
             }
-            // Constant::Str(str) => {}
+            Constant::Str(str) => {
+                Ok(str.to_any_type(compiler).as_any_value_enum()) 
+            }
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),

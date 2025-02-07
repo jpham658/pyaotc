@@ -5,7 +5,7 @@ use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
     ExprIfExp, ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr,
-    StmtFunctionDef, UnaryOp,
+    StmtFunctionDef, StmtIf, UnaryOp,
 };
 
 use std::collections::HashMap;
@@ -16,7 +16,6 @@ use crate::compiler_utils::print_fn::print_fn;
 use crate::compiler_utils::set_symtable_ptrs::set_variable_pointers_in_symbol_table;
 use crate::type_inference::{ConcreteValue, Scheme, Type};
 
-use super::any_class_utils::{get_tag, get_value};
 use super::error::{BackendError, IRGenResult};
 use super::generic_codegen::LLVMGenericCodegen;
 
@@ -37,6 +36,7 @@ impl LLVMTypedCodegen for Stmt {
         match self {
             Stmt::Expr(StmtExpr { value, .. }) => value.typed_codegen(compiler, types),
             Stmt::Assign(assign) => assign.typed_codegen(compiler, types),
+            Stmt::If(ifstmt) => ifstmt.typed_codegen(compiler, types),
             Stmt::Return(return_stmt) => match &return_stmt.value {
                 None => Err(BackendError {
                     message: "Not implemented return by itself yet",
@@ -45,7 +45,7 @@ impl LLVMTypedCodegen for Stmt {
             },
             Stmt::FunctionDef(funcdef) => funcdef.typed_codegen(compiler, types),
             _ => Err(BackendError {
-                message: "Not implemented yet...",
+                message: "Stmt type not implemented yet...",
             }),
         }
     }
@@ -125,9 +125,14 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             Type::ConcreteType(ConcreteValue::Float) => {
                 compiler.context.f64_type().fn_type(&llvm_arg_types, false)
             }
-            Type::ConcreteType(ConcreteValue::Bool) | Type::ConcreteType(ConcreteValue::Str) => {
+            Type::ConcreteType(ConcreteValue::Bool) => {
                 compiler.context.bool_type().fn_type(&llvm_arg_types, false)
             }
+            Type::ConcreteType(ConcreteValue::Str) => compiler
+                .context
+                .i8_type()
+                .ptr_type(AddressSpace::default())
+                .fn_type(&llvm_arg_types, false),
             Type::ConcreteType(ConcreteValue::None) => {
                 compiler.context.void_type().fn_type(&llvm_arg_types, false)
             }
@@ -271,13 +276,13 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             func_args.clear();
         }
 
-        // Build generic function body
+        // // Build generic function body
         let sym_table_as_any = compiler.sym_table_as_any.borrow().clone();
         let original_sym_table = compiler.sym_table.borrow().clone();
         {
             set_variable_pointers_in_symbol_table(compiler, &sym_table_as_any);
         }
-        let _ = self.generic_codegen(compiler);
+        let _ = self.generic_codegen(compiler)?;
         {
             set_variable_pointers_in_symbol_table(compiler, &original_sym_table);
         }
@@ -331,17 +336,6 @@ impl LLVMTypedCodegen for StmtAssign {
                         }
                         AnyTypeEnum::PointerType(ptr) => {
                             // Pointers are usually i8 ? Might wanna double check this
-
-                            //TODO: Define helper function that allocates memory for the given
-                            // Any type - to store value
-                            // let ptr_element_type = ptr.get_element_type();
-                            // if ptr_element_type.is_struct_type()
-                            //     && ptr_element_type.into_struct_type() == compiler.any_type
-                            // {
-                            //     // Result of a generic function call
-                            //     let any_tag = get_tag(ptr, compiler);
-                            //     let any_value = get_value(ptr, compiler);
-                            // }
                             target_ptr = compiler
                                 .builder
                                 .build_alloca(
@@ -404,6 +398,87 @@ impl LLVMTypedCodegen for StmtAssign {
     }
 }
 
+impl LLVMTypedCodegen for StmtIf {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
+        // TODO: Add guard for non-boolean tests e.g. if None, if [], etc.
+        // This would probably look like some sort of processing here
+        // and a separate is_truthy(Object* obj) function in generic_codegen
+        let test = self.test.typed_codegen(compiler, types)?;
+
+        let main = compiler.builder.get_insert_block().unwrap();
+        let iftrue = compiler.context.insert_basic_block_after(main, "iftrue");
+        let iffalse = compiler.context.insert_basic_block_after(iftrue, "iffalse");
+        let ifend = compiler.context.insert_basic_block_after(iffalse, "ifend");
+
+        let branch = compiler
+            .builder
+            .build_conditional_branch(test.into_int_value(), iftrue, iffalse)
+            .expect("Could not build if statement branch.");
+
+        // iftrue
+        let _ = compiler.builder.position_at_end(iftrue);
+        for stmt in &self.body {
+            match stmt.typed_codegen(compiler, types) {
+                Err(e) => return Err(e),
+                Ok(ir) => {
+                    if stmt.is_return_stmt() {
+                        match ir {
+                            AnyValueEnum::IntValue(i) => {
+                                let _ = compiler.builder.build_return(Some(&i));
+                            }
+                            AnyValueEnum::FloatValue(f) => {
+                                let _ = compiler.builder.build_return(Some(&f));
+                            }
+                            AnyValueEnum::PointerValue(p) => {
+                                let _ = compiler.builder.build_return(Some(&p));
+                            }
+                            _ => {
+                                let _ = compiler.builder.build_return(None);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let _ = compiler.builder.build_unconditional_branch(ifend);
+
+        // iffalse
+        let _ = compiler.builder.position_at_end(iffalse);
+        for stmt in &self.orelse {
+            match stmt.typed_codegen(compiler, types) {
+                Err(e) => return Err(e),
+                Ok(ir) => {
+                    if stmt.is_return_stmt() {
+                        match ir {
+                            AnyValueEnum::IntValue(i) => {
+                                let _ = compiler.builder.build_return(Some(&i));
+                            }
+                            AnyValueEnum::FloatValue(f) => {
+                                let _ = compiler.builder.build_return(Some(&f));
+                            }
+                            AnyValueEnum::PointerValue(p) => {
+                                let _ = compiler.builder.build_return(Some(&p));
+                            }
+                            _ => {
+                                let _ = compiler.builder.build_return(None);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let _ = compiler.builder.build_unconditional_branch(ifend);
+
+        let _ = compiler.builder.position_at_end(ifend);
+
+        Ok(branch.as_any_value_enum())
+    }
+}
+
 impl LLVMTypedCodegen for Expr {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
@@ -421,7 +496,7 @@ impl LLVMTypedCodegen for Expr {
             Expr::IfExp(ifexp) => ifexp.typed_codegen(compiler, types),
             Expr::List(list) => list.typed_codegen(compiler, types),
             _ => Err(BackendError {
-                message: "Not implemented yet...",
+                message: "Expression not implemented yet...",
             }),
         }
     }
@@ -703,8 +778,6 @@ impl LLVMTypedCodegen for ExprCall {
             .map(|arg| arg.typed_codegen(compiler, types))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
-        compiler.dump_module();
-
         if func_name.eq("print") {
             return print_fn(compiler, &args);
         }
@@ -823,12 +896,21 @@ impl LLVMTypedCodegen for ExprConstant {
             Constant::Str(str) => {
                 let str_ptr = compiler
                     .builder
-                    .build_global_string_ptr(str, "tmpstr")
+                    .build_global_string_ptr(str, "")
                     .expect("Could not create global string ptr for {str}.");
                 Ok(str_ptr.as_any_value_enum())
             }
+            Constant::None => {
+                let ptr_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+                let ptr = compiler
+                    .builder
+                    .build_alloca(ptr_type, "")
+                    .expect("Could not allocate space for None.");
+                let _ = compiler.builder.build_store(ptr, ptr_type.const_null());
+                Ok(ptr.as_any_value_enum())
+            }
             _ => Err(BackendError {
-                message: "Not implemented yet...",
+                message: "Constant type not implemented yet...",
             }),
         }
     }
@@ -840,12 +922,32 @@ impl LLVMTypedCodegen for ExprBinOp {
         compiler: &Compiler<'ctx>,
         types: &HashMap<String, Type>,
     ) -> IRGenResult<'ir> {
-        // TODO: So this part becomes convert whatever left and right are to Any type
-        // Then call generic functions like g_add(Any left, Any right), g_sub(Any left, Any right), etc.
-        // But, how do I cast AnyValueEnums...?
+        // TODO: Figure out what to do if I have like a result from a generic func and
+        // I try to do some operations on it
         let op = self.op;
         let left = self.left.typed_codegen(compiler, types)?;
         let right = self.right.typed_codegen(compiler, types)?;
+
+        if !left.is_float_value()
+            && !left.is_int_value()
+            && !left.is_pointer_value()
+            && !left.is_vector_value()
+        {
+            return Err(BackendError {
+                message: "Invalid left operand for binary operator",
+            });
+        }
+
+        if !right.is_float_value()
+            && !right.is_int_value()
+            && !right.is_pointer_value()
+            && !right.is_vector_value()
+        {
+            return Err(BackendError {
+                message: "Invalid right operand for binary operator.",
+            });
+        }
+
         let res = match op {
             Operator::Add => {
                 if left.is_int_value() && right.is_int_value() {
@@ -854,6 +956,21 @@ impl LLVMTypedCodegen for ExprBinOp {
                         .build_int_add(left.into_int_value(), right.into_int_value(), &"add")
                         .expect("Could not perform int addition")
                         .as_any_value_enum()
+                } else if left.is_pointer_value() && right.is_pointer_value() {
+                    // String concat
+                    let strconcat_fn = compiler.module.get_function("strconcat").unwrap();
+                    let res = compiler
+                        .builder
+                        .build_call(
+                            strconcat_fn,
+                            &[
+                                left.into_pointer_value().into(),
+                                right.into_pointer_value().into(),
+                            ],
+                            "",
+                        )
+                        .expect("Could not create string from object.");
+                    res.as_any_value_enum()
                 } else {
                     let float_map = get_left_and_right_as_floats(compiler, left, right);
                     let lhs = float_map
