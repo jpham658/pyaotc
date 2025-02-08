@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::codegen::error::{BackendError, IRGenResult};
 use crate::codegen::generic_codegen::LLVMGenericCodegen;
-use crate::codegen::generic_ops::build_generic_op::{get_generic_cmp_ops_ir, get_generic_ops_ir};
+use crate::codegen::generic_ops::build_generic_op::{get_generic_cmp_ops_ir, get_generic_ops_ir, get_generic_uops_ir};
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
 use crate::type_inference::Type;
 
@@ -18,6 +18,7 @@ use crate::type_inference::Type;
 fn get_prereq_llvm_ir() -> String {
     let cmp_op_ir = get_generic_cmp_ops_ir();
     let op_ir = get_generic_ops_ir();
+    let uop_ir = get_generic_uops_ir();
     r#"%struct.Object = type opaque
 %struct.HeapObject = type { i32, %union.anon }
 %union.anon = type { i8* }
@@ -35,6 +36,7 @@ declare void @llvm.memset.p0i8.i64(i8* nocapture writeonly, i8, i64, i1 immarg)
 @.str.4 = private unnamed_addr constant [4 x i8] c"%f\0A\00", align 1
 @.str.5 = private unnamed_addr constant [23 x i8] c"Not valid heap object.\00", align 1
 @.str.6 = private unnamed_addr constant [13 x i8] c"Hello world!\00", align 1
+@.str.7 = private unnamed_addr constant [1 x i8] zeroinitializer, align 1
 
 ; Function Attrs: noinline nounwind optnone uwtable
 define dso_local zeroext i1 @object_is_int(%struct.Object* noundef %0) #0 {
@@ -488,7 +490,17 @@ define dso_local i8* @strmult(i8* noundef %0, i32 noundef %1) #0 {
   %53 = load i8*, i8** %3, align 8
   ret i8* %53
 }
-"#.to_string() + &cmp_op_ir + &op_ir + "; ========================== USER DEFINED FUNCTIONS START HERE ==========================\n"
+
+define dso_local zeroext i1 @str_is_truthy(i8* noundef %0) #0 {
+  %2 = alloca i8*, align 8
+  store i8* %0, i8** %2, align 8
+  %3 = load i8*, i8** %2, align 8
+  %4 = call i32 @strcmp(i8* noundef %3, i8* noundef getelementptr inbounds ([1 x i8], [1 x i8]* @.str.7, i64 0, i64 0)) #4
+  %5 = icmp eq i32 %4, 0
+  %6 = xor i1 %5, true
+  ret i1 %6
+}
+"#.to_string() + &cmp_op_ir + &op_ir + &uop_ir
 }
 #[derive(Debug)]
 pub struct Compiler<'ctx> {

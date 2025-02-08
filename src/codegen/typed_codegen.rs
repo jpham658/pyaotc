@@ -455,7 +455,7 @@ impl LLVMTypedCodegen for StmtIf {
                 }
             }
         }
-        if(!ret_stmt_in_true) {
+        if (!ret_stmt_in_true) {
             let _ = compiler.builder.build_unconditional_branch(ifend);
         }
 
@@ -678,6 +678,32 @@ impl LLVMTypedCodegen for ExprUnaryOp {
                         Ok(false_val.as_any_value_enum())
                     }
                 }
+            }
+            (UnaryOp::Not, AnyValueEnum::FloatValue(f)) => {
+                let f64_type = compiler.context.f64_type();
+                if f == f64_type.const_zero() {
+                    Ok(truth_val.as_any_value_enum())
+                } else {
+                    Ok(false_val.as_any_value_enum())
+                }
+            }
+            (UnaryOp::Not, AnyValueEnum::PointerValue(ptr)) => {
+                // TODO: Handle Object ptr
+                let str_is_truthy_fn = compiler
+                    .module
+                    .get_function("str_is_truthy")
+                    .expect("str_is_truthy is not declared.");
+                let str_is_truthy = compiler
+                    .builder
+                    .build_call(str_is_truthy_fn, &[ptr.into()], "")
+                    .expect("Could not call str_is_truthy.")
+                    .as_any_value_enum()
+                    .into_int_value();
+                let not_str = compiler
+                    .builder
+                    .build_not(str_is_truthy, "")
+                    .expect("Could not build not.");
+                Ok(not_str.as_any_value_enum())
             }
             (UnaryOp::USub, AnyValueEnum::IntValue(i)) => {
                 if i == false_val {

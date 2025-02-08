@@ -26,12 +26,14 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-def factorial(x):
-    if x == 0:
-        return 1
-    return x * factorial(x-1)
+def minus(x):
+    return -x
 
-print(factorial(3.0))
+def positive(x):
+    return +x
+
+x = not "Hello"
+print(x)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);

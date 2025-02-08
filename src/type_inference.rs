@@ -122,8 +122,14 @@ impl TypeInferrer {
      * Helper to infer the type of a function call node.
      */
     pub fn infer_call(&mut self, env: &TypeEnv, call: &ExprCall) -> TypeInferenceRes {
-        let func_name = &*call.func;
-        let (sub1, type1) = self.infer_expression(env, func_name)?;
+        let func = &*call.func;
+        // func_name will always be a name expr
+        let func_name = func.as_name_expr().unwrap().id.as_str();
+        if func_name.eq("print") {
+            return Ok((Sub::new(), Type::ConcreteType(ConcreteValue::None)));
+        }
+
+        let (sub1, type1) = self.infer_expression(env, func)?;
 
         // func_name is always gonna have a scheme returned
         let scheme_type1;
@@ -352,7 +358,10 @@ impl TypeInferrer {
                     }
                     UnaryOp::Not => Type::ConcreteType(ConcreteValue::Bool),
                 };
-                Ok((Sub::new(), inferred_type))
+                let (sub, typ) = self.infer_expression(env, &uop.operand)?;
+                let unifier = unify(&typ, &inferred_type)?;
+                let composed_sub = compose_subs(&sub,&unifier);
+                Ok((composed_sub, inferred_type))
             }
             _ => Err(InferenceError {
                 message: format!(
@@ -400,8 +409,8 @@ impl TypeInferrer {
                 let return_stmts = funcdef.clone().get_return_stmts();
                 let func_type = self.infer_function(&new_env, funcdef, return_stmts);
                 match &func_type {
-                    Ok(pair) => {
-                        let generalised_functype = generalise(&pair.1, env);
+                    Ok((_, typ)) => {
+                        let generalised_functype = generalise(typ, env);
                         env.insert(funcdef.name.as_str().to_string(), generalised_functype);
                         func_type
                     }

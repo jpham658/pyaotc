@@ -163,7 +163,6 @@ impl LLVMGenericCodegen for StmtFunctionDef {
         }
 
         compiler.builder.position_at_end(main_entry);
-        println!("{:?}", main_entry);
         {
             let mut func_args = compiler.func_args.borrow_mut();
             func_args.clear();
@@ -310,7 +309,6 @@ impl LLVMGenericCodegen for StmtIf {
             }
         }
 
-
         let _ = compiler.builder.position_at_end(ifend);
 
         Ok(branch.as_any_value_enum())
@@ -412,68 +410,17 @@ impl LLVMGenericCodegen for ExprCompare {
     }
 }
 
-// TODO: Since I know the result of this will either be int or float,
-// do I even need to wrap in Any?
 impl LLVMGenericCodegen for ExprUnaryOp {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        let bool_type = compiler.context.bool_type();
-        let truth_val = bool_type.const_int(u64::from(true), false);
-        let false_val = bool_type.const_int(u64::from(false), false);
+        let g_uop_name = format!("{:?}", self.op);
+        let g_uop_fn = compiler.module.get_function(&g_uop_name).unwrap();
 
-        let i64_type = compiler.context.i64_type();
-        let zero = i64_type.const_zero();
-
-        // TODO: Update this with generic operator functions...
-        let operand_ptr = self.operand.generic_codegen(compiler)?.into_pointer_value();
-        let operand = get_value(operand_ptr, compiler).as_any_value_enum();
-
-        match (self.op, operand) {
-            (UnaryOp::Not, AnyValueEnum::IntValue(i)) => {
-                // TODO: Extend for sequence, set, and string types...
-                if i == false_val {
-                    Ok(truth_val.as_any_value_enum())
-                } else if i == truth_val {
-                    Ok(false_val.as_any_value_enum())
-                } else {
-                    // i64 type
-                    if i == zero {
-                        Ok(truth_val.as_any_value_enum())
-                    } else {
-                        Ok(false_val.as_any_value_enum())
-                    }
-                }
-            }
-            (UnaryOp::USub, AnyValueEnum::IntValue(i)) => {
-                if i == false_val {
-                    Ok(zero.as_any_value_enum())
-                } else if i == truth_val {
-                    let one = i64_type.const_int(1, false);
-                    let minus = compiler
-                        .builder
-                        .build_int_nsw_neg(one, "")
-                        .expect("Could not build negation.");
-                    Ok(minus.as_any_value_enum())
-                } else {
-                    let minus = compiler
-                        .builder
-                        .build_int_nsw_neg(operand.into_int_value(), "")
-                        .expect("Could not build negation.");
-                    Ok(minus.as_any_value_enum())
-                }
-            }
-            (UnaryOp::USub, AnyValueEnum::FloatValue(..)) => {
-                let minus = compiler
-                    .builder
-                    .build_float_neg(operand.into_float_value(), "")
-                    .expect("Could not build negation.");
-                Ok(minus.as_any_value_enum())
-            }
-            (UnaryOp::UAdd, AnyValueEnum::IntValue(i)) => Ok(i.as_any_value_enum()),
-            (UnaryOp::UAdd, AnyValueEnum::FloatValue(f)) => Ok(f.as_any_value_enum()),
-            _ => Err(BackendError {
-                message: "Invalid operand for given unary op.",
-            }),
-        }
+        let operand_obj = self.operand.generic_codegen(compiler)?.into_pointer_value();
+        let g_uop_res = compiler
+            .builder
+            .build_call(g_uop_fn, &[operand_obj.into()], "")
+            .expect(format!("Failed to call {}", g_uop_name).as_str());
+        Ok(g_uop_res.as_any_value_enum())
     }
 }
 
