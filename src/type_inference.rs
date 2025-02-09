@@ -7,7 +7,7 @@ use std::{
 
 use rustpython_parser::ast::{
     located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, Stmt, StmtExpr,
-    StmtFunctionDef, StmtIf, StmtReturn,
+    StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
 };
 
 use crate::astutils::GetReturnStmts;
@@ -435,8 +435,11 @@ impl TypeInferrer {
                     Err(_) => func_type,
                 }
             }
-            Stmt::If(StmtIf {
-                body, orelse, test, ..
+            Stmt::While(StmtWhile {
+                test, body, orelse, ..
+            })
+            | Stmt::If(StmtIf {
+                test, body, orelse, ..
             }) => {
                 let (inferred_test_sub, _) = self.infer_expression(env, test)?;
                 let mut new_env = apply_to_type_env(&inferred_test_sub, env);

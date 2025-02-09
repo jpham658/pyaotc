@@ -1,11 +1,11 @@
 use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, FloatType};
-use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue};
+use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue, IntValue};
 use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
     ExprIfExp, ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr,
-    StmtFunctionDef, StmtIf, UnaryOp,
+    StmtFunctionDef, StmtIf, StmtWhile, UnaryOp,
 };
 
 use std::collections::HashMap;
@@ -37,6 +37,7 @@ impl LLVMTypedCodegen for Stmt {
             Stmt::Expr(StmtExpr { value, .. }) => value.typed_codegen(compiler, types),
             Stmt::Assign(assign) => assign.typed_codegen(compiler, types),
             Stmt::If(ifstmt) => ifstmt.typed_codegen(compiler, types),
+            Stmt::While(whilestmt) => whilestmt.typed_codegen(compiler, types),
             Stmt::Return(return_stmt) => match &return_stmt.value {
                 None => {
                     let ret_none = compiler
@@ -174,7 +175,10 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             .module
             .add_function(func_name, llvm_return_type, None);
 
-        // make map for argument values
+        let func_entry = compiler.context.append_basic_block(func_def, "entry");
+        compiler.builder.position_at_end(func_entry);
+
+        // make map for arguments, and pointers to their arguments
         let args = self
             .args
             .args
@@ -187,16 +191,20 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             .zip(func_def.get_param_iter())
             .collect::<HashMap<_, _>>()
             .into_iter()
-            .map(|(k, v)| (k.clone(), v.as_any_value_enum()))
+            .map(|(k, v)| {
+                let v_ptr = compiler
+                    .builder
+                    .build_alloca(v.get_type(), "")
+                    .expect("Could not allocate memory for function argument.");
+                let _ = compiler.builder.build_store(v_ptr, v);
+                (k.clone(), v_ptr.as_any_value_enum())
+            })
             .collect::<HashMap<_, _>>();
-
         {
             let mut func_args = compiler.func_args.borrow_mut();
             func_args.extend(arg_map.clone());
         }
 
-        let func_entry = compiler.context.append_basic_block(func_def, "entry");
-        compiler.builder.position_at_end(func_entry);
         let mut ret_stmt_declared = false;
 
         // build function body
@@ -294,16 +302,29 @@ impl LLVMTypedCodegen for StmtAssign {
                     .typed_codegen(compiler, types)
                     .expect("Failed to compute right side of assignment with types.");
 
-                let generic_value_ptr = &self
-                    .value
-                    .generic_codegen(compiler)
-                    .expect("Failed to compute right side of assignment generically.");
+                // Only compute generic value if we are altering a variable outside of a function scope
+                let func_args = compiler.func_args.borrow();
+                let generic_value_ptr = if !func_args.contains_key(target_name) {
+                    let generic_val = self
+                        .value
+                        .generic_codegen(compiler)
+                        .expect("Failed to compute right side of assignment generically.")
+                        .clone();
+                    Some(generic_val)
+                } else {
+                    None
+                };
 
                 let mut sym_table = compiler.sym_table.borrow_mut();
                 let mut sym_table_as_any = compiler.sym_table_as_any.borrow_mut();
 
                 let target_ptr;
-                if !sym_table.contains_key(target_name) {
+                if func_args.contains_key(target_name) {
+                    target_ptr = func_args.get(target_name).unwrap().into_pointer_value()
+                } else if sym_table.contains_key(target_name) {
+                    // should only be pointers in the symbol table
+                    target_ptr = sym_table.get(target_name).unwrap().into_pointer_value();
+                } else {
                     match typed_value.get_type() {
                         AnyTypeEnum::FloatType(..) => {
                             target_ptr = compiler
@@ -340,9 +361,6 @@ impl LLVMTypedCodegen for StmtAssign {
                             });
                         }
                     }
-                } else {
-                    // should only be pointers in the symbol table
-                    target_ptr = sym_table.get(target_name).unwrap().into_pointer_value();
                 }
                 let store;
 
@@ -371,11 +389,11 @@ impl LLVMTypedCodegen for StmtAssign {
                         })
                     }
                 }
-                sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
-                sym_table_as_any.insert(
-                    target_name.to_string(),
-                    generic_value_ptr.as_any_value_enum(),
-                );
+
+                if let Some(ptr) = generic_value_ptr {
+                    sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
+                    sym_table_as_any.insert(target_name.to_string(), ptr.as_any_value_enum());
+                }
 
                 return Ok(store.as_any_value_enum());
             }
@@ -386,19 +404,128 @@ impl LLVMTypedCodegen for StmtAssign {
     }
 }
 
+impl LLVMTypedCodegen for StmtWhile {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &Compiler<'ctx>,
+        types: &HashMap<String, Type>,
+    ) -> IRGenResult<'ir> {
+        let curr_block = compiler.builder.get_insert_block().unwrap();
+        let while_test = compiler
+            .context
+            .insert_basic_block_after(curr_block, "while_test");
+        let while_body = compiler
+            .context
+            .insert_basic_block_after(while_test, "while_body");
+        let while_end = compiler
+            .context
+            .insert_basic_block_after(while_body, "while_end");
+        let while_or_else = if self.orelse.is_empty() {
+            None
+        } else {
+            Some(
+                compiler
+                    .context
+                    .insert_basic_block_after(while_body, "while_or_else"),
+            )
+        };
+        let _ = compiler.builder.build_unconditional_branch(while_test);
+
+        // while_test
+        let _ = compiler.builder.position_at_end(while_test);
+        let test = self.test.typed_codegen(compiler, types)?;
+        let test_as_bool = convert_test_to_bool(&test, compiler);
+        let while_branch = match while_or_else {
+            Some(or_else_block) => compiler
+                .builder
+                .build_conditional_branch(test_as_bool, while_body, or_else_block)
+                .expect("Could not build while test."),
+            _ => compiler
+                .builder
+                .build_conditional_branch(test_as_bool, while_body, while_end)
+                .expect("Could not build while test."),
+        };
+
+        // while_body
+        let _ = compiler.builder.position_at_end(while_body);
+        let mut ret_stmt_in_while_body = false;
+        for stmt in &self.body {
+            match stmt.typed_codegen(compiler, types) {
+                Err(e) => return Err(e),
+                Ok(ir) => {
+                    if stmt.is_return_stmt() {
+                        ret_stmt_in_while_body = true;
+                        match ir {
+                            AnyValueEnum::IntValue(i) => {
+                                let _ = compiler.builder.build_return(Some(&i));
+                            }
+                            AnyValueEnum::FloatValue(f) => {
+                                let _ = compiler.builder.build_return(Some(&f));
+                            }
+                            AnyValueEnum::PointerValue(p) => {
+                                let _ = compiler.builder.build_return(Some(&p));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        if !ret_stmt_in_while_body {
+            let _ = compiler.builder.build_unconditional_branch(while_test);
+        }
+
+        // while_or_else
+        if let Some(or_else_block) = while_or_else {
+            let _ = compiler.builder.position_at_end(or_else_block);
+            let mut ret_stmt_in_or_else = false;
+            for stmt in &self.orelse {
+                match stmt.typed_codegen(compiler, types) {
+                    Err(e) => return Err(e),
+                    Ok(ir) => {
+                        if stmt.is_return_stmt() {
+                            ret_stmt_in_or_else = true;
+                            match ir {
+                                AnyValueEnum::IntValue(i) => {
+                                    let _ = compiler.builder.build_return(Some(&i));
+                                }
+                                AnyValueEnum::FloatValue(f) => {
+                                    let _ = compiler.builder.build_return(Some(&f));
+                                }
+                                AnyValueEnum::PointerValue(p) => {
+                                    let _ = compiler.builder.build_return(Some(&p));
+                                }
+                                _ => {
+                                    let _ = compiler.builder.build_return(None);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !ret_stmt_in_or_else {
+                let _ = compiler.builder.build_unconditional_branch(while_end);
+            }
+        }
+
+        // while_end
+        let _ = compiler.builder.position_at_end(while_end);
+
+        Ok(while_branch.as_any_value_enum())
+    }
+}
+
 impl LLVMTypedCodegen for StmtIf {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
         types: &HashMap<String, Type>,
     ) -> IRGenResult<'ir> {
-        // TODO: Add guard for non-boolean tests e.g. if None, if [], etc.
-        // This would probably look like some sort of processing here
-        // and a separate is_truthy(Object* obj) function in generic_codegen
         let test = self.test.typed_codegen(compiler, types)?;
-
-        let main = compiler.builder.get_insert_block().unwrap();
-        let iftrue = compiler.context.insert_basic_block_after(main, "iftrue");
+        let curr_block = compiler.builder.get_insert_block().unwrap();
+        let iftrue = compiler
+            .context
+            .insert_basic_block_after(curr_block, "iftrue");
         let iffalse = if self.orelse.is_empty() {
             None
         } else {
@@ -411,9 +538,11 @@ impl LLVMTypedCodegen for StmtIf {
             ifend
         };
 
+        let test_as_bool = convert_test_to_bool(&test, compiler);
+
         let branch = compiler
             .builder
-            .build_conditional_branch(test.into_int_value(), iftrue, if_cond_block)
+            .build_conditional_branch(test_as_bool, iftrue, if_cond_block)
             .expect("Could not build if statement branch.");
 
         // iftrue
@@ -435,9 +564,7 @@ impl LLVMTypedCodegen for StmtIf {
                             AnyValueEnum::PointerValue(p) => {
                                 let _ = compiler.builder.build_return(Some(&p));
                             }
-                            _ => {
-                                
-                            }
+                            _ => {}
                         }
                     }
                 }
@@ -452,7 +579,7 @@ impl LLVMTypedCodegen for StmtIf {
             let _ = compiler.builder.position_at_end(iffalse_block);
             let mut ret_stmt_in_iffalse = false;
             for stmt in &self.orelse {
-                match stmt.generic_codegen(compiler) {
+                match stmt.typed_codegen(compiler, types) {
                     Err(e) => return Err(e),
                     Ok(ir) => {
                         if stmt.is_return_stmt() {
@@ -874,10 +1001,16 @@ impl LLVMTypedCodegen for ExprName {
             ExprContext::Load | ExprContext::Store => {
                 let name = self.id.as_str();
                 let func_args = compiler.func_args.borrow();
+                println!("funcargs {:?}", func_args);
                 if let Some(arg_val) = func_args.get(name) {
-                    return Ok(arg_val.clone());
+                    let load = compiler
+                        .builder
+                        .build_load(arg_val.into_pointer_value(), name)
+                        .expect("Could not load variable.");
+                    return Ok(load.as_any_value_enum());
                 }
                 let sym_table = compiler.sym_table.borrow();
+                println!("{:?}", sym_table);
                 if let Some(name_ptr) = sym_table.get(name) {
                     let load = compiler
                         .builder
@@ -1104,7 +1237,69 @@ impl LLVMTypedCodegen for ExprBinOp {
                 })
             }
         };
+
         Ok(res)
+    }
+}
+
+// HELPER FUNCTIONS
+
+fn convert_test_to_bool<'ctx>(
+    test: &AnyValueEnum<'ctx>,
+    compiler: &Compiler<'ctx>,
+) -> IntValue<'ctx> {
+    match test.get_type() {
+        AnyTypeEnum::IntType(i) => {
+            let bool_type = compiler.context.bool_type();
+            if i == bool_type {
+                test.into_int_value()
+            } else {
+                let i64_type = compiler.context.i64_type();
+                let zero = i64_type.const_zero();
+                compiler
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, test.into_int_value(), zero, "")
+                    .expect("Could not build truthy value for int.")
+            }
+        }
+        AnyTypeEnum::FloatType(..) => {
+            let f64_type = compiler.context.f64_type();
+            let zero = f64_type.const_zero();
+            compiler
+                .builder
+                .build_float_compare(
+                    inkwell::FloatPredicate::ONE,
+                    test.into_float_value(),
+                    zero,
+                    "",
+                )
+                .expect("Could not build truthy value for float.")
+        }
+        AnyTypeEnum::PointerType(..) => {
+            let ptr = test.into_pointer_value();
+            if ptr.is_null() {
+                compiler.context.bool_type().const_zero()
+            } else {
+                if ptr.get_type() == compiler.any_type.ptr_type(AddressSpace::default()) {
+                    let obj_as_truthy_fn = compiler.module.get_function("obj_as_truthy").unwrap();
+                    compiler
+                        .builder
+                        .build_call(obj_as_truthy_fn, &[ptr.into()], "")
+                        .expect("Could not call obj_as_truthy")
+                        .as_any_value_enum()
+                        .into_int_value()
+                } else {
+                    let str_is_truthy_fn = compiler.module.get_function("str_is_truthy").unwrap();
+                    compiler
+                        .builder
+                        .build_call(str_is_truthy_fn, &[ptr.into()], "")
+                        .expect("Could not call str_is_truthy")
+                        .as_any_value_enum()
+                        .into_int_value()
+                }
+            }
+        }
+        _ => compiler.context.bool_type().const_zero(), // others would need to be some sort runtime check...?
     }
 }
 
@@ -1112,7 +1307,7 @@ fn get_left_and_right_as_floats<'ctx>(
     compiler: &Compiler<'ctx>,
     left: AnyValueEnum<'ctx>,
     right: AnyValueEnum<'ctx>,
-) -> std::collections::HashMap<AnyValueEnum<'ctx>, Option<FloatValue<'ctx>>> {
+) -> HashMap<AnyValueEnum<'ctx>, Option<FloatValue<'ctx>>> {
     let mut float_map = std::collections::HashMap::new();
     let lhs;
     let rhs;
