@@ -22,21 +22,25 @@ fn get_prereq_llvm_ir() -> String {
     r#"%struct.Object = type opaque
 %struct.HeapObject = type { i32, %union.anon }
 %union.anon = type { i8* }
+%struct.__va_list_tag = type { i32, i32, i8*, i8* }
 
 declare i8* @malloc(i64 noundef) #1
 declare i64 @strlen(i8* noundef)
 declare i8* @strcpy(i8* noundef, i8* noundef)
 declare i8* @strcat(i8* noundef, i8* noundef)
 declare void @llvm.memset.p0i8.i64(i8* nocapture writeonly, i8, i64, i1 immarg)
+declare void @llvm.va_start(i8*) #3
+declare void @llvm.va_end(i8*) #3
 
-@.str = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
-@.str.1 = private unnamed_addr constant [6 x i8] c"True\0A\00", align 1
-@.str.2 = private unnamed_addr constant [7 x i8] c"False\0A\00", align 1
-@.str.3 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@.str.4 = private unnamed_addr constant [4 x i8] c"%f\0A\00", align 1
-@.str.5 = private unnamed_addr constant [23 x i8] c"Not valid heap object.\00", align 1
-@.str.6 = private unnamed_addr constant [13 x i8] c"Hello world!\00", align 1
-@.str.7 = private unnamed_addr constant [1 x i8] zeroinitializer, align 1
+@.int_str_format = private unnamed_addr constant [4 x i8] c"%d \00", align 1
+@.true_str_format = private unnamed_addr constant [6 x i8] c"True \00", align 1
+@.false_str_format = private unnamed_addr constant [7 x i8] c"False \00", align 1
+@.str_format = private unnamed_addr constant [4 x i8] c"%s \00", align 1
+@.float_str_format = private unnamed_addr constant [4 x i8] c"%f \00", align 1
+@.invalid_heap_obj_str = private unnamed_addr constant [23 x i8] c"Not valid heap object.\00", align 1
+@.empty_str = private unnamed_addr constant [1 x i8] zeroinitializer, align 1
+@.newline = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.none_str = private unnamed_addr constant [6 x i8] c"None \00", align 1
 
 ; Function Attrs: noinline nounwind optnone uwtable
 define dso_local zeroext i1 @object_is_int(%struct.Object* noundef %0) #0 {
@@ -268,11 +272,11 @@ define dso_local %struct.Object* @new_float(double noundef %0) #0 {
 }
 
 ; Function Attrs: noinline nounwind optnone uwtable
-define dso_local void @print_int(i32 noundef %0) #0 {
-  %2 = alloca i32, align 4
-  store i32 %0, i32* %2, align 4
-  %3 = load i32, i32* %2, align 4
-  %4 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([4 x i8], [4 x i8]* @.str, i64 0, i64 0), i32 noundef %3)
+define dso_local void @print_int(i64 noundef %0) #0 {
+  %2 = alloca i64, align 4
+  store i64 %0, i64* %2, align 4
+  %3 = load i64, i64* %2, align 4
+  %4 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([4 x i8], [4 x i8]* @.int_str_format, i64 0, i64 0), i64 noundef %3)
   ret void
 }
 
@@ -287,7 +291,7 @@ define dso_local void @print_bool(i1 noundef zeroext %0) #0 {
   %5 = load i8, i8* %2, align 1
   %6 = trunc i8 %5 to i1
   %7 = zext i1 %6 to i64
-  %8 = select i1 %6, i8* getelementptr inbounds ([6 x i8], [6 x i8]* @.str.1, i64 0, i64 0), i8* getelementptr inbounds ([7 x i8], [7 x i8]* @.str.2, i64 0, i64 0)
+  %8 = select i1 %6, i8* getelementptr inbounds ([6 x i8], [6 x i8]* @.true_str_format, i64 0, i64 0), i8* getelementptr inbounds ([7 x i8], [7 x i8]* @.false_str_format, i64 0, i64 0)
   store i8* %8, i8** %3, align 8
   %9 = load i8*, i8** %3, align 8
   %10 = call i32 (i8*, ...) @printf(i8* noundef %9)
@@ -299,7 +303,7 @@ define dso_local void @print_str(i8* noundef %0) #0 {
   %2 = alloca i8*, align 8
   store i8* %0, i8** %2, align 8
   %3 = load i8*, i8** %2, align 8
-  %4 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([4 x i8], [4 x i8]* @.str.3, i64 0, i64 0), i8* noundef %3)
+  %4 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([4 x i8], [4 x i8]* @.str_format, i64 0, i64 0), i8* noundef %3)
   ret void
 }
 
@@ -308,48 +312,128 @@ define dso_local void @print_float(double noundef %0) #0 {
   %2 = alloca double, align 8
   store double %0, double* %2, align 8
   %3 = load double, double* %2, align 8
-  %4 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([4 x i8], [4 x i8]* @.str.4, i64 0, i64 0), double noundef %3)
+  %4 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([4 x i8], [4 x i8]* @.float_str_format, i64 0, i64 0), double noundef %3)
   ret void
 }
 
 ; Function Attrs: noinline nounwind optnone uwtable
-define dso_local void @print_obj(%struct.Object* noundef %0) #0 {
-  %2 = alloca %struct.Object*, align 8
-  store %struct.Object* %0, %struct.Object** %2, align 8
-  %3 = load %struct.Object*, %struct.Object** %2, align 8
-  %4 = call i32 @object_type(%struct.Object* noundef %3)
-  switch i32 %4, label %15 [
-    i32 1, label %5
-    i32 0, label %9
-    i32 2, label %12
+define dso_local void @print_newline() #0 {
+  %1 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([2 x i8], [2 x i8]* @.newline, i64 0, i64 0))
+  ret void
+}
+
+define dso_local void @print_none() #0 {
+  %1 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([6 x i8], [6 x i8]* @.none_str, i64 0, i64 0))
+  ret void
+}
+
+; Function Attrs: noinline nounwind optnone uwtable
+define dso_local void @print_obj(i32 noundef %0, %struct.Object* noundef %1, ...) #0 {
+  %3 = alloca i32, align 4
+  %4 = alloca %struct.Object*, align 8
+  %5 = alloca [1 x %struct.__va_list_tag], align 16
+  %6 = alloca %struct.Object*, align 8
+  %7 = alloca i32, align 4
+  store i32 %0, i32* %3, align 4
+  store %struct.Object* %1, %struct.Object** %4, align 8
+  %8 = getelementptr inbounds [1 x %struct.__va_list_tag], [1 x %struct.__va_list_tag]* %5, i64 0, i64 0
+  %9 = bitcast %struct.__va_list_tag* %8 to i8*
+  call void @llvm.va_start(i8* %9)
+  %10 = load %struct.Object*, %struct.Object** %4, align 8
+  store %struct.Object* %10, %struct.Object** %6, align 8
+  store i32 0, i32* %7, align 4
+  br label %11
+
+11:                                               ; preds = %54, %2
+  %12 = load i32, i32* %7, align 4
+  %13 = load i32, i32* %3, align 4
+  %14 = icmp slt i32 %12, %13
+  br i1 %14, label %15, label %57
+
+15:                                               ; preds = %11
+  %16 = load %struct.Object*, %struct.Object** %6, align 8
+  %17 = icmp eq %struct.Object* %16, null
+  br i1 %17, label %18, label %19
+
+18:                                               ; preds = %15
+  call void @print_none()
+  br label %54
+
+19:                                               ; preds = %15
+  %20 = load %struct.Object*, %struct.Object** %6, align 8
+  %21 = call i32 @object_type(%struct.Object* noundef %20)
+  switch i32 %21, label %32 [
+    i32 1, label %22
+    i32 0, label %26
+    i32 3, label %29
   ]
 
-5:                                                ; preds = %1
-  %6 = load %struct.Object*, %struct.Object** %2, align 8
-  %7 = call i64 @object_as_int(%struct.Object* noundef %6)
-  %8 = trunc i64 %7 to i32
-  call void @print_int(i32 noundef %8)
-  br label %18
+22:                                               ; preds = %19
+  %23 = load %struct.Object*, %struct.Object** %6, align 8
+  %24 = call i64 @object_as_int(%struct.Object* noundef %23)
+  %25 = trunc i64 %24 to i32
+  call void @print_int(i64 noundef %24)
+  br label %35
 
-9:                                                ; preds = %1
-  %10 = load %struct.Object*, %struct.Object** %2, align 8
-  %11 = call zeroext i1 @object_as_bool(%struct.Object* noundef %10)
-  call void @print_bool(i1 noundef zeroext %11)
-  br label %18
+26:                                               ; preds = %19
+  %27 = load %struct.Object*, %struct.Object** %6, align 8
+  %28 = call zeroext i1 @object_as_bool(%struct.Object* noundef %27)
+  call void @print_bool(i1 noundef zeroext %28)
+  br label %35
 
-12:                                               ; preds = %1
-  %13 = load %struct.Object*, %struct.Object** %2, align 8
-  %14 = call i8* @object_as_str(%struct.Object* noundef %13)
-  call void @print_str(i8* noundef %14)
-  br label %18
+29:                                               ; preds = %19
+  %30 = load %struct.Object*, %struct.Object** %6, align 8
+  %31 = call double @object_as_float(%struct.Object* noundef %30)
+  call void @print_float(double noundef %31)
+  br label %35
 
-15:                                               ; preds = %1
-  %16 = load %struct.Object*, %struct.Object** %2, align 8
-  %17 = call double @object_as_float(%struct.Object* noundef %16)
-  call void @print_float(double noundef %17)
-  br label %18
+32:                                               ; preds = %19
+  %33 = load %struct.Object*, %struct.Object** %6, align 8
+  %34 = call i8* @object_as_str(%struct.Object* noundef %33)
+  call void @print_str(i8* noundef %34)
+  br label %35
 
-18:                                               ; preds = %15, %12, %9, %5
+35:                                               ; preds = %32, %29, %26, %22
+  %36 = getelementptr inbounds [1 x %struct.__va_list_tag], [1 x %struct.__va_list_tag]* %5, i64 0, i64 0
+  %37 = getelementptr inbounds %struct.__va_list_tag, %struct.__va_list_tag* %36, i32 0, i32 0
+  %38 = load i32, i32* %37, align 16
+  %39 = icmp ule i32 %38, 40
+  br i1 %39, label %40, label %46
+
+40:                                               ; preds = %35
+  %41 = getelementptr inbounds %struct.__va_list_tag, %struct.__va_list_tag* %36, i32 0, i32 3
+  %42 = load i8*, i8** %41, align 16
+  %43 = getelementptr i8, i8* %42, i32 %38
+  %44 = bitcast i8* %43 to %struct.Object**
+  %45 = add i32 %38, 8
+  store i32 %45, i32* %37, align 16
+  br label %51
+
+46:                                               ; preds = %35
+  %47 = getelementptr inbounds %struct.__va_list_tag, %struct.__va_list_tag* %36, i32 0, i32 2
+  %48 = load i8*, i8** %47, align 8
+  %49 = bitcast i8* %48 to %struct.Object**
+  %50 = getelementptr i8, i8* %48, i32 8
+  store i8* %50, i8** %47, align 8
+  br label %51
+
+51:                                               ; preds = %46, %40
+  %52 = phi %struct.Object** [ %44, %40 ], [ %49, %46 ]
+  %53 = load %struct.Object*, %struct.Object** %52, align 8
+  store %struct.Object* %53, %struct.Object** %6, align 8
+  br label %54
+
+54:                                               ; preds = %51, %18
+  %55 = load i32, i32* %7, align 4
+  %56 = add nsw i32 %55, 1
+  store i32 %56, i32* %7, align 4
+  br label %11
+
+57:                                               ; preds = %11
+  %58 = getelementptr inbounds [1 x %struct.__va_list_tag], [1 x %struct.__va_list_tag]* %5, i64 0, i64 0
+  %59 = bitcast %struct.__va_list_tag* %58 to i8*
+  call void @llvm.va_end(i8* %59)
+  call void @print_newline()
   ret void
 }
 
@@ -383,13 +467,14 @@ define dso_local void @print_heap_obj(%struct.HeapObject* noundef %0) #0 {
   br label %20
 
 18:                                               ; preds = %10
-  %19 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([23 x i8], [23 x i8]* @.str.5, i64 0, i64 0))
+  %19 = call i32 (i8*, ...) @printf(i8* noundef getelementptr inbounds ([23 x i8], [23 x i8]* @.invalid_heap_obj_str, i64 0, i64 0))
   br label %20
 
 20:                                               ; preds = %18, %14
   br label %21
 
 21:                                               ; preds = %20, %6
+  call void @print_newline()
   ret void
 }
 
@@ -495,7 +580,7 @@ define dso_local zeroext i1 @str_is_truthy(i8* noundef %0) #0 {
   %2 = alloca i8*, align 8
   store i8* %0, i8** %2, align 8
   %3 = load i8*, i8** %2, align 8
-  %4 = call i32 @strcmp(i8* noundef %3, i8* noundef getelementptr inbounds ([1 x i8], [1 x i8]* @.str.7, i64 0, i64 0)) #4
+  %4 = call i32 @strcmp(i8* noundef %3, i8* noundef getelementptr inbounds ([1 x i8], [1 x i8]* @.empty_str, i64 0, i64 0)) #4
   %5 = icmp eq i32 %4, 0
   %6 = xor i1 %5, true
   ret i1 %6

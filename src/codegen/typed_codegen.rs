@@ -38,9 +38,13 @@ impl LLVMTypedCodegen for Stmt {
             Stmt::Assign(assign) => assign.typed_codegen(compiler, types),
             Stmt::If(ifstmt) => ifstmt.typed_codegen(compiler, types),
             Stmt::Return(return_stmt) => match &return_stmt.value {
-                None => Err(BackendError {
-                    message: "Not implemented return by itself yet",
-                }),
+                None => {
+                    let ret_none = compiler
+                        .builder
+                        .build_return(None)
+                        .expect("Could not build void return.");
+                    Ok(ret_none.as_any_value_enum())
+                }
                 Some(expr) => expr.typed_codegen(compiler, types),
             },
             Stmt::FunctionDef(funcdef) => funcdef.typed_codegen(compiler, types),
@@ -193,81 +197,67 @@ impl LLVMTypedCodegen for StmtFunctionDef {
 
         let func_entry = compiler.context.append_basic_block(func_def, "entry");
         compiler.builder.position_at_end(func_entry);
-        let mut return_stmts = Vec::new();
+        let mut ret_stmt_declared = false;
 
         // build function body
-        for statement in &self.body {
-            let res = statement.typed_codegen(compiler, types);
-            match res {
-                Err(e) => return Err(e),
-                Ok(ir) => match statement {
-                    Stmt::Return(..) => {
-                        return_stmts.push(ir);
-                    }
-                    _ => {}
-                },
+        for stmt in &self.body {
+            let ir = stmt.typed_codegen(compiler, types)?;
+            if !stmt.is_return_stmt() {
+                continue;
             }
-        }
-
-        // assume for now we only have one return statement at the end of our function
-        match &return_type {
-            Type::ConcreteType(ConcreteValue::Int) => {
-                let _ = compiler
-                    .builder
-                    .build_return(Some(&return_stmts[0].into_int_value()));
+            if ret_stmt_declared {
+                return Err(BackendError {
+                    message: "Return statement cannot be declared twice in function body.",
+                });
             }
-            Type::ConcreteType(ConcreteValue::Float) => {
-                let _ = compiler
-                    .builder
-                    .build_return(Some(&return_stmts[0].into_float_value()));
-            }
-            Type::ConcreteType(ConcreteValue::Bool) => {
-                let _ = compiler
-                    .builder
-                    .build_return(Some(&return_stmts[0].into_int_value()));
-            }
-            Type::ConcreteType(ConcreteValue::None) => {
-                let _ = compiler.builder.build_return(None);
-            }
-            Type::ConcreteType(ConcreteValue::Str) => {
-                let _ = compiler
-                    .builder
-                    .build_return(Some(&return_stmts[0].into_pointer_value()));
-            }
-
-            Type::Scheme(Scheme { type_name, .. }) => match **type_name {
-                Type::ConcreteType(ConcreteValue::Int) => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&return_stmts[0].into_int_value()));
+            ret_stmt_declared = true;
+            match &return_type {
+                Type::ConcreteType(ConcreteValue::Int)
+                | Type::ConcreteType(ConcreteValue::Bool) => {
+                    let _ = compiler.builder.build_return(Some(&ir.into_int_value()));
                 }
                 Type::ConcreteType(ConcreteValue::Float) => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&return_stmts[0].into_float_value()));
+                    let _ = compiler.builder.build_return(Some(&ir.into_float_value()));
                 }
-                Type::ConcreteType(ConcreteValue::Bool) => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&return_stmts[0].into_int_value()));
+                Type::ConcreteType(ConcreteValue::None) => {
+                    continue;
                 }
                 Type::ConcreteType(ConcreteValue::Str) => {
                     let _ = compiler
                         .builder
-                        .build_return(Some(&return_stmts[0].into_pointer_value()));
+                        .build_return(Some(&ir.into_pointer_value()));
                 }
+
+                Type::Scheme(Scheme { type_name, .. }) => match **type_name {
+                    Type::ConcreteType(ConcreteValue::Int)
+                    | Type::ConcreteType(ConcreteValue::Bool) => {
+                        let _ = compiler.builder.build_return(Some(&ir.into_int_value()));
+                    }
+                    Type::ConcreteType(ConcreteValue::Float) => {
+                        let _ = compiler.builder.build_return(Some(&ir.into_float_value()));
+                    }
+                    Type::ConcreteType(ConcreteValue::Str) => {
+                        let _ = compiler
+                            .builder
+                            .build_return(Some(&ir.into_pointer_value()));
+                    }
+                    _ => {
+                        return Err(BackendError {
+                            message: "Not a valid function return type after visiting scheme.",
+                        });
+                    }
+                },
                 _ => {
                     return Err(BackendError {
-                        message: "Not a valid function return type after visiting scheme.",
-                    });
+                        message: "Not a valid function return type.",
+                    })
                 }
-            },
-            _ => {
-                return Err(BackendError {
-                    message: "Not a valid function return type.",
-                })
-            }
-        };
+            };
+        }
+
+        if !ret_stmt_declared {
+            let _ = compiler.builder.build_return(None);
+        }
 
         // reset back to normal!
         compiler.builder.position_at_end(main_entry);
@@ -370,8 +360,6 @@ impl LLVMTypedCodegen for StmtAssign {
                             .expect("Could not store variable {target_name}.");
                     }
                     AnyTypeEnum::PointerType(..) => {
-                        // TODO: Check in with this implementation
-                        // like how weird is this to do??
                         store = compiler
                             .builder
                             .build_store(target_ptr, typed_value.into_pointer_value())
@@ -448,7 +436,7 @@ impl LLVMTypedCodegen for StmtIf {
                                 let _ = compiler.builder.build_return(Some(&p));
                             }
                             _ => {
-                                let _ = compiler.builder.build_return(None);
+                                
                             }
                         }
                     }
@@ -809,8 +797,9 @@ impl LLVMTypedCodegen for ExprCall {
         }
 
         // validate function args
+        // TODO: Handle varargs
         let arg_count = function.count_params();
-        if arg_count != self.args.len() as u32 {
+        if !func_name.eq("print") && arg_count != self.args.len() as u32 {
             return Err(BackendError {
                 message: "Incorrect number of arguments provided.",
             });

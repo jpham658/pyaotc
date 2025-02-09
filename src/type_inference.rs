@@ -6,8 +6,8 @@ use std::{
 };
 
 use rustpython_parser::ast::{
-    located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, Stmt, StmtExpr, StmtFunctionDef,
-    StmtIf, StmtReturn,
+    located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, Stmt, StmtExpr,
+    StmtFunctionDef, StmtIf, StmtReturn,
 };
 
 use crate::astutils::GetReturnStmts;
@@ -91,12 +91,24 @@ type TypeInferenceRes = Result<(Sub, Type), InferenceError>;
 
 pub struct TypeInferrer {
     fresh_var_generator: FreshVariableGenerator,
+    typename_to_type: HashMap<String, Type>,
 }
 
 impl TypeInferrer {
     pub fn new() -> Self {
+        let typename_to_type = HashMap::from([
+            ("bool".to_string(), Type::ConcreteType(ConcreteValue::Bool)),
+            ("int".to_string(), Type::ConcreteType(ConcreteValue::Int)),
+            (
+                "float".to_string(),
+                Type::ConcreteType(ConcreteValue::Float),
+            ),
+            ("str".to_string(), Type::ConcreteType(ConcreteValue::Str)),
+            ("None".to_string(), Type::ConcreteType(ConcreteValue::None)),
+        ]);
         Self {
             fresh_var_generator: FreshVariableGenerator::new("v"),
+            typename_to_type,
         }
     }
 
@@ -193,7 +205,10 @@ impl TypeInferrer {
         let args = &func.args.args;
         let arg_types = args
             .iter()
-            .map(|_| Type::TypeVar(TypeVar(self.fresh_var_generator.next())))
+            .map(|arg| match &arg.as_arg().annotation {
+                None => Type::TypeVar(TypeVar(self.fresh_var_generator.next())),
+                Some(expr) => verify_type_ann(&expr, &self.typename_to_type).unwrap().1, // get type
+            })
             .collect::<Vec<_>>();
 
         let mut extended_env = env.clone();
@@ -219,7 +234,9 @@ impl TypeInferrer {
 
         let return_type: (Sub, Type);
 
-        if !return_stmts.is_empty() {
+        if let Some(typexpr) = &func.returns {
+            return_type = verify_type_ann(&typexpr, &self.typename_to_type)?;
+        } else if !return_stmts.is_empty() {
             // assume all return stmts return same type for now
             match &return_stmts[0].value {
                 None => return_type = (Sub::new(), Type::ConcreteType(ConcreteValue::None)),
@@ -235,32 +252,32 @@ impl TypeInferrer {
             return_type = (Sub::new(), Type::ConcreteType(ConcreteValue::None));
         }
 
-        let func_type = if arg_types.len() == 0 {
-            let return_type_clone = return_type.clone();
+        let (func_sub, func_type) = if arg_types.len() == 0 {
+            let (_, ret_typ) = return_type.clone();
             (
                 Sub::new(),
                 Type::FuncType(FuncTypeValue {
                     input: Box::new(Type::ConcreteType(ConcreteValue::None)),
-                    output: Box::new(return_type_clone.1),
+                    output: Box::new(ret_typ),
                 }),
             )
         } else {
             arg_types
                 .into_iter()
                 .rev()
-                .fold(return_type.clone(), |acc, arg_type| {
+                .fold(return_type.clone(), |(sub, typ), arg_type| {
                     // Compose the substitution and create the function type
-                    let result_subs = compose_subs(&subs, &acc.0);
+                    let result_subs = compose_subs(&subs, &sub);
                     let func_type = Type::FuncType(FuncTypeValue {
                         input: Box::new(arg_type),
-                        output: Box::new(acc.1),
+                        output: Box::new(typ),
                     });
                     (result_subs, func_type)
                 })
         };
 
-        let resultant_sub = func_type.0.clone();
-        Ok((func_type.0, apply(&resultant_sub, &func_type.1)))
+        let resultant_sub = func_sub.clone();
+        Ok((func_sub, apply(&resultant_sub, &func_type)))
     }
 
     /**
@@ -360,7 +377,7 @@ impl TypeInferrer {
                 };
                 let (sub, typ) = self.infer_expression(env, &uop.operand)?;
                 let unifier = unify(&typ, &inferred_type)?;
-                let composed_sub = compose_subs(&sub,&unifier);
+                let composed_sub = compose_subs(&sub, &unifier);
                 Ok((composed_sub, inferred_type))
             }
             _ => Err(InferenceError {
@@ -378,7 +395,8 @@ impl TypeInferrer {
                 let (rhs_sub, rhs_type) = self.infer_expression(env, &assign.value)?;
                 let new_env;
                 let var;
-                match &assign.targets[0] {
+                let target = &assign.targets[0];
+                match target {
                     Expr::Name(name) => {
                         var = name.id.as_str();
                         new_env = remove(&var, env);
@@ -455,7 +473,42 @@ impl TypeInferrer {
 //  ====================================================
 //                  HELPER FUNCTIONS
 //  ====================================================
-// TODO: Change free_type_var and apply to be in a trait
+/**
+ * Helper to verify a type annotation
+ */
+pub fn verify_type_ann(
+    typexpr: &Expr,
+    typename_to_type: &HashMap<String, Type>,
+) -> TypeInferenceRes {
+    let typ = match &typexpr {
+        Expr::Name(ExprName { id, .. }) => {
+            let typename = id.as_str();
+            match typename_to_type.get(typename) {
+                Some(typ) => typ.clone(),
+                None => {
+                    return Err(InferenceError {
+                        message: "Invalid type annotation.".to_string(),
+                    })
+                }
+            }
+        }
+        Expr::Constant(ExprConstant { value, .. }) => match value {
+            Constant::None => typename_to_type.get("None").unwrap().clone(),
+            _ => {
+                return Err(InferenceError {
+                    message: "Invalid type annotation.".to_string(),
+                })
+            }
+        },
+        _ => {
+            return Err(InferenceError {
+                message: "Invalid type annotation.".to_string(),
+            })
+        }
+    };
+
+    Ok((Sub::new(), typ))
+}
 
 /**
  * Helper to convert the given type to a free type variable.

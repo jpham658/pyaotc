@@ -26,14 +26,14 @@ fn types_pp(name_to_type: &HashMap<String, Type>) {
 
 fn main() {
     let python_source = r#"
-def minus(x):
-    return -x
-
-def positive(x):
-    return +x
-
-x = not "Hello"
-print(x)
+def hanoi(n, a: int, b: int, c: int):
+    if n == 0:
+        return
+    hanoi(n-1, a, c, b)
+    print(a, "->", b)
+    hanoi(n-1, c, b, a)
+    
+hanoi(4.0,1,2,3)
 "#;
     let context = Context::create();
     let compiler = Compiler::new(&context);

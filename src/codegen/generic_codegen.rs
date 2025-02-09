@@ -49,9 +49,13 @@ impl LLVMGenericCodegen for Stmt {
             Stmt::Assign(assign) => assign.generic_codegen(compiler),
             Stmt::If(stmtif) => stmtif.generic_codegen(compiler),
             Stmt::Return(return_stmt) => match &return_stmt.value {
-                None => Err(BackendError {
-                    message: "Not implemented return by itself yet",
-                }),
+                None => {
+                    let ret_none = compiler
+                        .builder
+                        .build_return(None)
+                        .expect("Could not build void return.");
+                    Ok(ret_none.as_any_value_enum())
+                }
                 Some(expr) => expr.generic_codegen(compiler),
             },
             Stmt::FunctionDef(funcdef) => funcdef.generic_codegen(compiler),
@@ -125,41 +129,35 @@ impl LLVMGenericCodegen for StmtFunctionDef {
 
         let func_entry = compiler.context.append_basic_block(func_def, "entry");
         compiler.builder.position_at_end(func_entry);
-        let mut return_stmts = Vec::new();
+        let mut ret_stmt_declared = false;
 
         // build function body
-        for statement in &self.body {
-            let res = statement.generic_codegen(compiler);
-            match res {
-                Err(e) => return Err(e),
-                Ok(ir) => match statement {
-                    Stmt::Return(..) => {
-                        return_stmts.push(ir);
-                    }
-                    _ => {}
-                },
+        for stmt in &self.body {
+            let ir = stmt.generic_codegen(compiler)?;
+            if !stmt.is_return_stmt() {
+                continue;
             }
-        }
-
-        if return_stmts.is_empty() {
-            let _ = compiler.builder.build_return(None);
-        } else {
-            match return_stmts[0].get_type() {
-                // TODO: Figure out if I should just return a boolean here...
+            if ret_stmt_declared {
+                return Err(BackendError {
+                    message: "Return statement cannot be declared twice in function body.",
+                });
+            }
+            ret_stmt_declared = true;
+            match ir.get_type() {
                 AnyTypeEnum::IntType(..) => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&return_stmts[0].into_int_value()));
+                    let _ = compiler.builder.build_return(Some(&ir.into_int_value()));
                 }
-                AnyTypeEnum::VoidType(..) => {
-                    let _ = compiler.builder.build_return(None);
-                }
+                AnyTypeEnum::VoidType(..) => continue,
                 _ => {
                     let _ = compiler
                         .builder
-                        .build_return(Some(&return_stmts[0].into_pointer_value()));
+                        .build_return(Some(&ir.into_pointer_value()));
                 }
             }
+        }
+
+        if !ret_stmt_declared {
+            let _ = compiler.builder.build_return(None);
         }
 
         compiler.builder.position_at_end(main_entry);
@@ -226,7 +224,9 @@ impl LLVMGenericCodegen for StmtAssign {
 
 impl LLVMGenericCodegen for StmtIf {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+        println!("In if stmt generic codegen");
         let test = self.test.generic_codegen(compiler)?;
+        println!("test codegen success");
 
         let main = compiler.builder.get_insert_block().unwrap();
         let iftrue = compiler.context.insert_basic_block_after(main, "iftrue");
@@ -264,7 +264,7 @@ impl LLVMGenericCodegen for StmtIf {
                                 let _ = compiler.builder.build_return(Some(&p));
                             }
                             _ => {
-                                let _ = compiler.builder.build_return(None);
+                                
                             }
                         }
                     }
@@ -485,7 +485,7 @@ impl LLVMGenericCodegen for ExprCall {
 
         // validate function args
         let arg_count = function.count_params();
-        if arg_count != self.args.len() as u32 {
+        if !func_name.eq("print") && arg_count != self.args.len() as u32 {
             return Err(BackendError {
                 message: "Incorrect number of arguments provided.",
             });
@@ -498,7 +498,7 @@ impl LLVMGenericCodegen for ExprCall {
             .map(|arg| arg.generic_codegen(compiler))
             .collect::<Result<Vec<_>, BackendError>>()?;
 
-        let args: Vec<BasicMetadataValueEnum<'_>> = args
+        let mut args: Vec<BasicMetadataValueEnum<'_>> = args
             .into_iter()
             .filter_map(|val| match val {
                 AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(
@@ -519,6 +519,14 @@ impl LLVMGenericCodegen for ExprCall {
                 _ => None,
             })
             .collect();
+
+        if func_name.eq("print") {
+            let llvm_arg_count = compiler
+                .context
+                .i32_type()
+                .const_int(args.len() as u64, false);
+            args.insert(0, BasicMetadataValueEnum::IntValue(llvm_arg_count));
+        }
 
         let call = compiler
             .builder
