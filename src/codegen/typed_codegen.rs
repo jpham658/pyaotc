@@ -1001,7 +1001,6 @@ impl LLVMTypedCodegen for ExprName {
             ExprContext::Load | ExprContext::Store => {
                 let name = self.id.as_str();
                 let func_args = compiler.func_args.borrow();
-                println!("funcargs {:?}", func_args);
                 if let Some(arg_val) = func_args.get(name) {
                     let load = compiler
                         .builder
@@ -1010,7 +1009,6 @@ impl LLVMTypedCodegen for ExprName {
                     return Ok(load.as_any_value_enum());
                 }
                 let sym_table = compiler.sym_table.borrow();
-                println!("{:?}", sym_table);
                 if let Some(name_ptr) = sym_table.get(name) {
                     let load = compiler
                         .builder
