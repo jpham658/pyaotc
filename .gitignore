@@ -1,5 +1,5 @@
 /target
 /outputs
-*.c
+test.c
 *.ll
 test
