@@ -9,10 +9,14 @@ mod inferrer_tests {
     use super::*;
     use malachite_bigint::BigInt;
     use rustpython_parser::{
+        self,
         ast::{
-            Arg, ArgWithDefault, Arguments, ExprBinOp, ExprContext, ExprName, Identifier, Operator, StmtAssign, TextSize
+            Arg, ArgWithDefault, Arguments, ExprBinOp, ExprContext, ExprName, Identifier, Operator,
+            StmtAssign, Suite, TextSize,
         },
+        parse,
         text_size::TextRange,
+        Parse,
     };
 
     const DEFAULT_RANGE: TextRange = TextRange::new(TextSize::new(0), TextSize::new(1));
@@ -43,7 +47,7 @@ mod inferrer_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
-                bounded_vars: HashSet::from(["a".to_string()]),
+                bounded_vars: BTreeSet::from(["a".to_string()]),
             },
         );
         let name = ExprName {
@@ -82,7 +86,7 @@ mod inferrer_tests {
                     input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
                     output: Box::new(Type::ConcreteType(ConcreteValue::Int)),
                 })),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
         let call = ExprCall {
@@ -90,7 +94,7 @@ mod inferrer_tests {
             func: Box::new(Expr::Name(ExprName {
                 range: DEFAULT_RANGE,
                 id: Identifier::new("add"),
-                ctx: ExprContext::Load,
+                ctx: DEFAULT_NAME_CTX,
             })),
             args: vec![Expr::Constant(ExprConstant {
                 value: Constant::Int(BigInt::new(malachite_bigint::Sign::Plus, [5].to_vec())),
@@ -123,7 +127,7 @@ mod inferrer_tests {
             "add".to_string(),
             Scheme {
                 type_name: Box::new(add_funcdef),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
 
@@ -173,7 +177,7 @@ mod inferrer_tests {
             "add".to_string(),
             Scheme {
                 type_name: Box::new(add_funcdef),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
 
@@ -241,13 +245,9 @@ mod inferrer_tests {
             type_comment: None,
             type_params: vec![],
         };
-        let ret_stmts = vec![StmtReturn {
-            range: DEFAULT_RANGE,
-            value: Some(Box::new(return_stmt)),
-        }];
 
         let (subs, inferred_type) = type_inferrer
-            .infer_function(&mut env, &func_def, ret_stmts)
+            .infer_function(&mut env, &func_def)
             .expect("Funcdef shouldn't cause an error.");
 
         let expected_type = Type::FuncType(FuncTypeValue {
@@ -280,13 +280,9 @@ mod inferrer_tests {
             type_comment: None,
             type_params: vec![],
         };
-        let ret_stmts = vec![StmtReturn {
-            range: DEFAULT_RANGE,
-            value: None,
-        }];
 
         let (sub, inferred_type) = type_inferrer
-            .infer_function(&mut env, &func_def, ret_stmts)
+            .infer_function(&mut env, &func_def)
             .expect("Funcdef should not cause an error.");
 
         let expected_type = Type::FuncType(FuncTypeValue {
@@ -315,7 +311,7 @@ mod inferrer_tests {
                 range: DEFAULT_RANGE,
                 value: generate_ast_int(1),
                 kind: None,
-            })) 
+            })),
         });
         let return_stmt = Expr::BinOp(ExprBinOp {
             range: DEFAULT_RANGE,
@@ -325,7 +321,7 @@ mod inferrer_tests {
                 ctx: DEFAULT_NAME_CTX,
             })),
             op: Operator::Add,
-            right: Box::new(binop_right)
+            right: Box::new(binop_right),
         });
         let body = vec![Stmt::Return(StmtReturn {
             range: DEFAULT_RANGE,
@@ -334,7 +330,7 @@ mod inferrer_tests {
 
         // TODO: for some generic function def add(x,y): return x + y,
         // how can we represent that x and y can multiple types?
-        // e.g int -> int, str -> int (but not int -> str), float -> int  
+        // e.g int -> int, str -> int (but not int -> str), float -> int
         // def add(x, y):
         //    return x + y + 1
         let func_def = StmtFunctionDef {
@@ -347,26 +343,17 @@ mod inferrer_tests {
             type_comment: None,
             type_params: vec![],
         };
-        let ret_stmts = vec![StmtReturn {
-            range: DEFAULT_RANGE,
-            value: Some(Box::new(return_stmt)),
-        }];
 
-        let (sub, inferred_type) = type_inferrer.infer_function(&mut env, &func_def, ret_stmts)
+        let (sub, inferred_type) = type_inferrer
+            .infer_function(&mut env, &func_def)
             .expect("Funcdef shouldn't cause an error.");
-        let expected_type = Type::FuncType(
-            FuncTypeValue { 
-                input: Box::new(Type::ConcreteType(ConcreteValue::Int)), 
-                output: Box::new(
-                    Type::FuncType(
-                        FuncTypeValue { 
-                            input: Box::new(Type::ConcreteType(ConcreteValue::Int)), 
-                            output: Box::new(Type::ConcreteType(ConcreteValue::Int)), 
-                        }
-                    )
-                ) 
-            }
-        );
+        let expected_type = Type::FuncType(FuncTypeValue {
+            input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
+            output: Box::new(Type::FuncType(FuncTypeValue {
+                input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
+                output: Box::new(Type::ConcreteType(ConcreteValue::Int)),
+            })),
+        });
 
         assert!(sub.len() != 0);
         assert_eq!(expected_type, inferred_type);
@@ -408,18 +395,40 @@ mod inferrer_tests {
             type_comment: None,
             type_params: vec![],
         };
-        let ret_stmts = Vec::new();
-    
-        let (sub, inferred_type) = type_inferrer.infer_function(&mut env, &func_def, ret_stmts)
+
+        let (sub, inferred_type) = type_inferrer
+            .infer_function(&mut env, &func_def)
             .expect("Funcdef shouldn't cause an error.");
-        let expected_type = Type::FuncType(
-            FuncTypeValue { 
-                input: Box::new(Type::ConcreteType(ConcreteValue::Int)), 
-                output: Box::new(Type::ConcreteType(ConcreteValue::None)) 
-            }
-        );
+        let expected_type = Type::FuncType(FuncTypeValue {
+            input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
+            output: Box::new(Type::ConcreteType(ConcreteValue::None)),
+        });
 
         assert!(sub.len() != 0);
+        assert_eq!(expected_type, inferred_type);
+    }
+
+    #[test]
+    fn test_infer_function_with_different_return_types() {
+        let mut type_inferrer = TypeInferrer::new();
+        let mut env = TypeEnv::new();
+        let factorial_fn = r#"
+def return_string_or_bool(x):
+    if x == 0:
+        return False
+    else:
+        return "True"
+        "#;
+        let ast = Suite::parse(&factorial_fn, "<embedded>").unwrap();
+        let (_, inferred_type) = type_inferrer
+            .infer_stmt(&mut env, &ast[0])
+            .expect("Funcdef shouldn't cause an error.");
+        
+        let expected_type = Type::FuncType(FuncTypeValue {
+            input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
+            output: Box::new(Type::Any),
+        });
+        
         assert_eq!(expected_type, inferred_type);
     }
 
@@ -427,33 +436,26 @@ mod inferrer_tests {
     fn test_infer_assignment() {
         let mut type_inferrer = TypeInferrer::new();
         let mut env = TypeEnv::new();
-        let assign = Stmt::Assign (
-            StmtAssign {
+        let assign = Stmt::Assign(StmtAssign {
+            range: DEFAULT_RANGE,
+            targets: vec![Expr::Name(ExprName {
                 range: DEFAULT_RANGE,
-                targets: vec![
-                    Expr::Name (
-                        ExprName {
-                            range: DEFAULT_RANGE,
-                            id: Identifier::new("x"),
-                            ctx: ExprContext::Store,
-                        },
-                    ),
-                ],
-                value: Box::new(Expr::Constant(
-                    ExprConstant {
-                        range: DEFAULT_RANGE,
-                        value: Constant::Float(3.0),
-                        kind: None,
-                    },
-                )),
-                type_comment: None,
-            },
-        );
-        let (_, inferred_type) = type_inferrer.infer_stmt(&mut env, &assign)
+                id: Identifier::new("x"),
+                ctx: ExprContext::Store,
+            })],
+            value: Box::new(Expr::Constant(ExprConstant {
+                range: DEFAULT_RANGE,
+                value: Constant::Float(3.0),
+                kind: None,
+            })),
+            type_comment: None,
+        });
+        let (_, inferred_type) = type_inferrer
+            .infer_stmt(&mut env, &assign)
             .expect("Assignment should not cause an error.");
-        let expected_type = Type::Scheme(Scheme { 
-            type_name: Box::new(Type::ConcreteType(ConcreteValue::Float)), 
-            bounded_vars: HashSet::new() 
+        let expected_type = Type::Scheme(Scheme {
+            type_name: Box::new(Type::ConcreteType(ConcreteValue::Float)),
+            bounded_vars: BTreeSet::new(),
         });
         assert_eq!(expected_type, inferred_type);
     }
@@ -499,7 +501,7 @@ mod free_type_var_tests {
     #[test]
     fn test_free_type_var_with_typevars() {
         let typevar = Type::TypeVar(TypeVar("n".to_string()));
-        let mut expected_ftv = HashSet::new();
+        let mut expected_ftv = BTreeSet::new();
         expected_ftv.insert("n".to_string());
         assert_eq!(expected_ftv, free_type_var(&typevar));
     }
@@ -512,7 +514,7 @@ mod free_type_var_tests {
             input: Box::new(input_type),
             output: Box::new(output_type),
         });
-        let mut expected_ftv = HashSet::new();
+        let mut expected_ftv = BTreeSet::new();
         expected_ftv.insert("a".to_string());
         expected_ftv.insert("b".to_string());
         assert_eq!(expected_ftv, free_type_var(&functype));
@@ -521,7 +523,7 @@ mod free_type_var_tests {
     #[test]
     fn test_free_type_var_with_concrete_type() {
         let concrete_type = Type::ConcreteType(ConcreteValue::Float);
-        let expected_ftv = HashSet::new();
+        let expected_ftv = BTreeSet::new();
         assert_eq!(expected_ftv, free_type_var(&concrete_type));
     }
 
@@ -535,13 +537,13 @@ mod free_type_var_tests {
             input: Box::new(input_type),
             output: Box::new(output_type),
         });
-        let mut bounded_vars = HashSet::new();
+        let mut bounded_vars = BTreeSet::new();
         bounded_vars.insert("b".to_string());
         let scheme = Type::Scheme(Scheme {
             type_name: Box::new(functype),
             bounded_vars: bounded_vars,
         });
-        let mut expected_ftv = HashSet::new();
+        let mut expected_ftv = BTreeSet::new();
         expected_ftv.insert("a".to_string());
         assert_eq!(expected_ftv, free_type_var(&scheme));
     }
@@ -560,7 +562,7 @@ mod apply_tests {
             input: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
             output: Box::new(Type::TypeVar(TypeVar("b".to_string()))),
         });
-        let mut bounded_vars = HashSet::new();
+        let mut bounded_vars = BTreeSet::new();
         bounded_vars.insert("b".to_string());
         let typ = Type::Scheme(Scheme {
             type_name: Box::new(type_name),
@@ -572,7 +574,7 @@ mod apply_tests {
             output: Box::new(Type::TypeVar(TypeVar("b".to_string()))),
         });
 
-        let mut expected_bounded_vars = HashSet::new();
+        let mut expected_bounded_vars = BTreeSet::new();
         expected_bounded_vars.insert("b".to_string());
 
         let expected_subbed_scheme = Type::Scheme(Scheme {
@@ -679,10 +681,10 @@ mod type_env_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::ConcreteType(ConcreteValue::Float)),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
-        assert_eq!(HashSet::new(), free_type_vars_in_type_env(&type_env));
+        assert_eq!(BTreeSet::new(), free_type_vars_in_type_env(&type_env));
     }
 
     #[test]
@@ -692,10 +694,10 @@ mod type_env_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
-        let mut expected_ftvs = HashSet::new();
+        let mut expected_ftvs = BTreeSet::new();
         expected_ftvs.insert("a".to_string());
         assert_eq!(expected_ftvs, free_type_vars_in_type_env(&type_env));
     }
@@ -709,7 +711,7 @@ mod type_env_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
         let mut expected_type_env = TypeEnv::new();
@@ -717,7 +719,7 @@ mod type_env_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::ConcreteType(ConcreteValue::Str)),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
         apply_to_type_env(&sub, &type_env);
@@ -738,7 +740,7 @@ mod generalise_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::ConcreteType(ConcreteValue::Int)),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
         type_env.insert(
@@ -748,14 +750,14 @@ mod generalise_tests {
                     input: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
                     output: Box::new(Type::ConcreteType(ConcreteValue::Int)),
                 })),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
 
         let typ = Type::ConcreteType(ConcreteValue::Int);
         let expected_scheme = Scheme {
             type_name: Box::new(typ.clone()),
-            bounded_vars: HashSet::new(),
+            bounded_vars: BTreeSet::new(),
         };
         let actual_scheme = generalise(&typ, &type_env);
         assert_eq!(expected_scheme, actual_scheme);
@@ -776,11 +778,11 @@ mod generalise_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::TypeVar(TypeVar("b".to_string()))),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
 
-        let mut type_vars = HashSet::new();
+        let mut type_vars = BTreeSet::new();
         type_vars.insert("a".to_string());
 
         let expected_scheme = Scheme {
@@ -806,11 +808,11 @@ mod generalise_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
 
-        let mut expected_bounded_vars = HashSet::new();
+        let mut expected_bounded_vars = BTreeSet::new();
         expected_bounded_vars.insert("b".to_string());
         let expected_scheme = Scheme {
             type_name: Box::new(typ.clone()),
@@ -838,18 +840,18 @@ mod generalise_tests {
             "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
         type_env.insert(
             "y".to_string(),
             Scheme {
                 type_name: Box::new(Type::ConcreteType(ConcreteValue::Bool)),
-                bounded_vars: HashSet::new(),
+                bounded_vars: BTreeSet::new(),
             },
         );
 
-        let mut expected_bounded_vars = HashSet::new();
+        let mut expected_bounded_vars = BTreeSet::new();
         expected_bounded_vars.insert("b".to_string());
         let expected_scheme = Scheme {
             type_name: Box::new(typ.clone()),
@@ -880,7 +882,6 @@ mod fresh_var_generator_tests {
 
 #[cfg(test)]
 mod instantiate_tests {
-    use std::any::Any;
 
     use super::*;
 
@@ -891,7 +892,7 @@ mod instantiate_tests {
             input: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
             output: Box::new(Type::TypeVar(TypeVar("b".to_string()))),
         });
-        let mut bounded_vars = HashSet::new();
+        let mut bounded_vars = BTreeSet::new();
         bounded_vars.insert("a".to_string());
         bounded_vars.insert("b".to_string());
 
@@ -924,7 +925,7 @@ mod instantiate_tests {
             input: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
             output: Box::new(Type::TypeVar(TypeVar("b".to_string()))),
         });
-        let mut bounded_vars = HashSet::new();
+        let mut bounded_vars = BTreeSet::new();
         bounded_vars.insert("b".to_string());
 
         let scheme = Scheme {
@@ -1013,11 +1014,10 @@ mod unify_tests {
     }
 
     #[test]
-    fn test_unify_with_mismatching_concrete_types() {
+    fn test_unify_with_mismatching_but_unifiable_types() {
         let t1 = Type::ConcreteType(ConcreteValue::Float);
         let t2 = Type::ConcreteType(ConcreteValue::Bool);
-        let err_msg = "Mismatching concrete types".to_string();
-        assert_eq!(Err(InferenceError { message: err_msg }), unify(&t1, &t2));
+        assert_eq!(Ok(Sub::new()), unify(&t1, &t2));
     }
 
     #[test]
