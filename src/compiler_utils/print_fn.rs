@@ -45,9 +45,13 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                         .module
                         .get_function("print_obj")
                         .expect("print_obj is not defined.");
+                    let arg_num = compiler.context.i32_type().const_int(1, false);
                     let _ = compiler
                         .builder
-                        .build_call(print_obj, &[BasicMetadataValueEnum::PointerValue(*ptr)], "")
+                        .build_call(print_obj, &[
+                            BasicMetadataValueEnum::IntValue(arg_num),
+                            BasicMetadataValueEnum::PointerValue(*ptr)
+                        ], "")
                         .expect("Could not call print_obj.");
                 } else {
                     let print_str = compiler
