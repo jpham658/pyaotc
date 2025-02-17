@@ -4,72 +4,45 @@ mod astutils;
 mod codegen;
 mod compiler;
 mod compiler_utils;
+mod rule_typing;
 mod type_inference;
 
 use compiler::Compiler;
 use inkwell::context::Context;
+use rule_typing::{get_inferred_rule_types, RuleEnv};
 use rustpython_parser::{
-    ast::{self, Stmt},
+    ast::{self},
     Parse,
 };
-use std::collections::HashMap;
-use type_inference::{infer_types, Type, TypeEnv, TypeInferrer};
+use std::{collections::HashMap, env, fs};
+use type_inference::{infer_ast_types, NodeTypeDB, TypeEnv, TypeInferrer};
 
-fn types_pp(name_to_type: &HashMap<String, Type>) {
-    println!("Name                          Type");
-    println!("-----------------------------------");
-    for (name, typ) in name_to_type.into_iter() {
-        println!("{}                          {:?}", name, typ);
-    }
-    println!()
-}
 
 fn main() {
-    let python_source = r#"
-x = 2
-def foo(x):
-    while (x):
-        print(x)
-        x = x - 1
-    else:
-        print(x)
-foo(2.0)
-"#;
+    let args: Vec<String> = env::args().collect();
+    let python_source_path = if args.len() > 1 {&args[1]} else {"test.py"};
+    let python_source = fs::read_to_string(python_source_path)
+        .expect(format!("Could not read file {}", &python_source_path).as_str());
+
     let context = Context::create();
     let compiler = Compiler::new(&context);
     let mut type_env = TypeEnv::new();
     let mut type_inferrer = TypeInferrer::new();
-    let mut types: HashMap<String, Type> = HashMap::new();
+    let mut type_db = NodeTypeDB::new();
+    let mut rules_env: RuleEnv = HashMap::new();
 
-    match ast::Suite::parse(&python_source, "<embedded>") {
+    match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
-            // TODO: figure out how to handle scope in TypeEnv and compiler
             astutils::print_ast(&ast);
-            for stmt in &ast {
-                match infer_types(&mut type_inferrer, &mut type_env, &stmt) {
-                    Ok(typ) => match &stmt {
-                        Stmt::FunctionDef(funcdef) => {
-                            let func_name = funcdef.name.as_str().to_string();
-                            types.insert(func_name, typ);
-                        }
-                        Stmt::Assign(assign) => {
-                            let lhs_name = assign.targets[0]
-                                .as_name_expr()
-                                .unwrap()
-                                .id
-                                .as_str()
-                                .to_string();
-                            types.insert(lhs_name, typ);
-                        }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        eprintln!("{:?}", e);
-                    }
-                }
-            }
-            types_pp(&types);
-            compiler.compile(&ast, &types);
+            // do one round of type inferrence first,
+            // then while types in type_env are not bound,
+            // swap between rule inferrence and normal type inferrence?
+
+            // normal type inferrence
+            infer_ast_types(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
+
+            println!("final type env: {:?}", type_env);
+            compiler.compile(&ast, &type_env);
             // compiler.compile_generically(&ast);
         }
         Err(e) => {

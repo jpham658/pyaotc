@@ -598,7 +598,6 @@ pub struct Compiler<'ctx> {
     pub sym_table_as_any: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
     pub func_args: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
     pub any_type: StructType<'ctx>,
-    pub any_type_info: HashMap<String, TypeInfo>,
     pub object_type: StructType<'ctx>,
 }
 
@@ -617,8 +616,6 @@ impl<'ctx> Compiler<'ctx> {
         let object_type = context.get_struct_type("struct.Object").unwrap(); // Should not fail if context is set up properly.
         let list_type = context.struct_type(&[], false);
 
-        let any_type_info = create_type_info_hashmap();
-
         Self {
             context,
             builder,
@@ -627,7 +624,6 @@ impl<'ctx> Compiler<'ctx> {
             sym_table_as_any: RefCell::new(HashMap::new()),
             func_args: RefCell::new(HashMap::new()),
             any_type,
-            any_type_info,
             object_type,
         }
     }
@@ -646,8 +642,9 @@ impl<'ctx> Compiler<'ctx> {
         // self.setup_tagged_ptr_fns();
 
         // Initialise Boehm GC
-        // let gc_init = self.module.get_function("GC_init").unwrap();
-        // let _ = self.builder.build_call(gc_init, &[], "gc_init_call");
+        self.setup_gc_fns();
+        let gc_init = self.module.get_function("GC_init").unwrap();
+        let _ = self.builder.build_call(gc_init, &[], "gc_init_call");
 
         for statement in ast {
             match statement.typed_codegen(&self, &types) {
@@ -660,8 +657,8 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         // Collect garbage
-        // let gc_collect = self.module.get_function("GC_gcollect").unwrap();
-        // let _ = self.builder.build_call(gc_collect, &[], "gc_collect_call");
+        let gc_collect = self.module.get_function("GC_gcollect").unwrap();
+        let _ = self.builder.build_call(gc_collect, &[], "gc_collect_call");
 
         let _ = self
             .builder
@@ -741,84 +738,84 @@ impl<'ctx> Compiler<'ctx> {
      * Garbage collection utils...
      * TODO: Add Boehm GC to dependencies...
      */
-    // fn setup_gc_fns(&self) {
-    //     let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
-    //     let i64_type = self.context.i64_type();
-    //     let void_type = self.context.void_type();
+    fn setup_gc_fns(&self) {
+        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let i64_type = self.context.i64_type();
+        let void_type = self.context.void_type();
 
-    //     self.module
-    //         .add_function("GC_init", void_type.fn_type(&[], false), None);
-    //     self.module.add_function(
-    //         "GC_malloc",
-    //         i8_ptr_type.fn_type(&[BasicMetadataTypeEnum::IntType(i64_type)], false),
-    //         None,
-    //     );
-    //     self.module.add_function(
-    //         "GC_calloc",
-    //         self.context.i32_type().fn_type(&[], true),
-    //         None,
-    //     );
-    //     self.module.add_function(
-    //         "GC_realloc",
-    //         i8_ptr_type.fn_type(
-    //             &[
-    //                 BasicMetadataTypeEnum::PointerType(i8_ptr_type),
-    //                 BasicMetadataTypeEnum::IntType(i64_type),
-    //             ],
-    //             false,
-    //         ),
-    //         None,
-    //     );
-    //     self.module.add_function(
-    //         "GC_free",
-    //         void_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
-    //         None,
-    //     );
-    //     self.module
-    //         .add_function("GC_gcollect", void_type.fn_type(&[], false), None);
-    //     self.module.add_function(
-    //         "GC_register_finalizer",
-    //         void_type.fn_type(
-    //             &[
-    //                 BasicMetadataTypeEnum::PointerType(i8_ptr_type),
-    //                 BasicMetadataTypeEnum::PointerType(i8_ptr_type),
-    //                 BasicMetadataTypeEnum::PointerType(i8_ptr_type),
-    //                 BasicMetadataTypeEnum::PointerType(i8_ptr_type),
-    //                 BasicMetadataTypeEnum::PointerType(i8_ptr_type),
-    //             ],
-    //             false,
-    //         ),
-    //         None,
-    //     );
-    //     self.module.add_function(
-    //         "GC_set_max_heap_size",
-    //         void_type.fn_type(&[BasicMetadataTypeEnum::IntType(i64_type)], false),
-    //         None,
-    //     );
-    //     self.module.add_function(
-    //         "GC_size",
-    //         i64_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
-    //         None,
-    //     );
-    //     self.module.add_function(
-    //         "GC_base",
-    //         i8_ptr_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
-    //         None,
-    //     );
-    //     self.module.add_function(
-    //         "GC_malloc_uncollectable",
-    //         i8_ptr_type.fn_type(&[BasicMetadataTypeEnum::IntType(i64_type)], false),
-    //         None,
-    //     );
-    //     self.module
-    //         .add_function("GC_get_heap_size", i64_type.fn_type(&[], false), None);
-    //     self.module
-    //         .add_function("GC_get_free_bytes", i64_type.fn_type(&[], false), None);
-    //     self.module
-    //         .add_function("GC_get_bytes_since_gc", i64_type.fn_type(&[], false), None);
-    //     self.module
-    //         .add_function("GC_get_total_bytes", i64_type.fn_type(&[], false), None);
-    // }
+        self.module
+            .add_function("GC_init", void_type.fn_type(&[], false), None);
+        self.module.add_function(
+            "GC_malloc",
+            i8_ptr_type.fn_type(&[BasicMetadataTypeEnum::IntType(i64_type)], false),
+            None,
+        );
+        self.module.add_function(
+            "GC_calloc",
+            self.context.i32_type().fn_type(&[], true),
+            None,
+        );
+        self.module.add_function(
+            "GC_realloc",
+            i8_ptr_type.fn_type(
+                &[
+                    BasicMetadataTypeEnum::PointerType(i8_ptr_type),
+                    BasicMetadataTypeEnum::IntType(i64_type),
+                ],
+                false,
+            ),
+            None,
+        );
+        self.module.add_function(
+            "GC_free",
+            void_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
+            None,
+        );
+        self.module
+            .add_function("GC_gcollect", void_type.fn_type(&[], false), None);
+        self.module.add_function(
+            "GC_register_finalizer",
+            void_type.fn_type(
+                &[
+                    BasicMetadataTypeEnum::PointerType(i8_ptr_type),
+                    BasicMetadataTypeEnum::PointerType(i8_ptr_type),
+                    BasicMetadataTypeEnum::PointerType(i8_ptr_type),
+                    BasicMetadataTypeEnum::PointerType(i8_ptr_type),
+                    BasicMetadataTypeEnum::PointerType(i8_ptr_type),
+                ],
+                false,
+            ),
+            None,
+        );
+        self.module.add_function(
+            "GC_set_max_heap_size",
+            void_type.fn_type(&[BasicMetadataTypeEnum::IntType(i64_type)], false),
+            None,
+        );
+        self.module.add_function(
+            "GC_size",
+            i64_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
+            None,
+        );
+        self.module.add_function(
+            "GC_base",
+            i8_ptr_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
+            None,
+        );
+        self.module.add_function(
+            "GC_malloc_uncollectable",
+            i8_ptr_type.fn_type(&[BasicMetadataTypeEnum::IntType(i64_type)], false),
+            None,
+        );
+        self.module
+            .add_function("GC_get_heap_size", i64_type.fn_type(&[], false), None);
+        self.module
+            .add_function("GC_get_free_bytes", i64_type.fn_type(&[], false), None);
+        self.module
+            .add_function("GC_get_bytes_since_gc", i64_type.fn_type(&[], false), None);
+        self.module
+            .add_function("GC_get_total_bytes", i64_type.fn_type(&[], false), None);
+    }
 
     fn build_gc_malloc_call(&self, size: i64) -> IRGenResult<'_> {
         let gc_malloc_fn = self.module.get_function("GC_malloc").unwrap();
@@ -835,1052 +832,4 @@ impl<'ctx> Compiler<'ctx> {
             }),
         }
     }
-
-    fn setup_tagged_ptr_fns(&self) {
-        // Set up for bool tagged ptrs - tagged 0
-        let _ = self.build_object_is_bool_fn();
-        let _ = self.build_object_as_bool_fn();
-        let _ = self.build_new_bool_fn();
-
-        // Set up for int tagged ptrs - tagged 1
-        let _ = self.build_object_is_int_fn();
-        let _ = self.build_object_as_int_fn();
-        let _ = self.build_new_int_fn();
-
-        // Set up for heap object tagged ptrs - tagged 2
-        let _ = self.build_object_is_heap_obj_fn();
-        let _ = self.build_object_address_fn();
-        let _ = self.build_object_from_address_fn();
-
-        // Set up for generic object type testers
-        let _ = self.build_object_type_fn();
-
-        // Set up for string (heap object)
-        let _ = self.build_object_is_str_fn();
-        let _ = self.build_object_as_str_fn();
-        let _ = self.build_new_str_fn();
-
-        // Set up for float (heap object)
-        let _ = self.build_object_is_float_fn();
-        let _ = self.build_object_as_float_fn();
-        let _ = self.build_new_float_fn();
-
-        // TODO: Extend for list, set types
-    }
-
-    fn build_object_is_bool_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let params = &[BasicMetadataTypeEnum::PointerType(obj_ptr_type)];
-
-        let bool_type = self.context.bool_type();
-        let object_is_bool_fn_type = bool_type.fn_type(params, false);
-        let object_is_bool_fn =
-            self.module
-                .add_function("object_is_bool", object_is_bool_fn_type, None);
-
-        let entry_block = self.context.append_basic_block(object_is_bool_fn, "entry");
-        self.builder.position_at_end(entry_block);
-
-        let object_ptr = object_is_bool_fn.get_nth_param(0).unwrap();
-        let ptr_to_obj_ptr = self
-            .builder
-            .build_alloca(obj_ptr_type, "")
-            .expect("Could not allocate memory.");
-        let _ = self.builder.build_store(ptr_to_obj_ptr, object_ptr);
-        let copied_obj_ptr = self
-            .builder
-            .build_load(ptr_to_obj_ptr, "")
-            .expect("Could not load pointer.");
-        let obj_ptr_as_int = self
-            .builder
-            .build_ptr_to_int(
-                copied_obj_ptr.into_pointer_value(),
-                self.context.i64_type(),
-                "",
-            )
-            .expect("Could not convert pointer to integer.");
-        let tag_mask = self.any_type_info["Bool"].tag_mask;
-        let llvm_tag_mask = self.context.i64_type().const_int(tag_mask.into(), false);
-        let obj_ptr_tag = self
-            .builder
-            .build_and(obj_ptr_as_int, llvm_tag_mask, "")
-            .expect("Could not perform 'and'.");
-        let tag = self.any_type_info["Bool"].tag;
-        let llvm_tag = self.context.i64_type().const_int(tag as u64, false);
-        let is_bool = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, obj_ptr_tag, llvm_tag, "")
-            .expect("Could not compare int values.");
-
-        let _ = self.builder.build_return(Some(&is_bool));
-
-        self.builder.position_at_end(main_entry);
-
-        Ok(object_is_bool_fn.as_any_value_enum())
-    }
-
-    fn build_object_as_bool_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let bool_type = self.context.bool_type();
-        let i64_type = self.context.i64_type();
-        let object_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let fn_type = bool_type.fn_type(&[object_ptr_type.into()], false);
-        let object_as_bool_fn = self.module.add_function("object_as_bool", fn_type, None);
-
-        let entry = self.context.append_basic_block(object_as_bool_fn, "entry");
-
-        let _ = self.builder.position_at_end(entry);
-
-        let ptr_to_object_ptr = self
-            .builder
-            .build_alloca(object_ptr_type, "")
-            .expect("Could not allocate memory.");
-
-        let object_ptr = object_as_bool_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-
-        let _ = self.builder.build_store(ptr_to_object_ptr, object_ptr);
-
-        let copied_obj_ptr = self
-            .builder
-            .build_load(ptr_to_object_ptr, "")
-            .expect("Could not load value.");
-
-        let ptr_to_int = self
-            .builder
-            .build_ptr_to_int(copied_obj_ptr.into_pointer_value(), i64_type, "ptr_to_int")
-            .expect("Could not convert pointer to int.");
-
-        let shift_bits = self.any_type_info["Bool"].shift;
-        let llvm_shift_bits = i64_type.const_int(shift_bits as u64, false);
-
-        let shifted_value = self
-            .builder
-            .build_right_shift(ptr_to_int, llvm_shift_bits, false, "")
-            .expect("Could not shift ptr right.");
-
-        let shifted_value_as_i1 = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::NE,
-                shifted_value,
-                i64_type.const_int(0 as u64, false),
-                "",
-            )
-            .expect("Could not compare bool.");
-
-        let _ = self.builder.build_return(Some(&shifted_value_as_i1));
-
-        self.builder.position_at_end(main_entry);
-
-        Ok(object_as_bool_fn.as_any_value_enum())
-    }
-
-    fn build_new_bool_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let i64_type = self.context.i64_type();
-        let bool_type = self.context.bool_type();
-        let ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let fn_type = ptr_type.fn_type(&[bool_type.into()], false);
-        let new_bool_fn = self.module.add_function("new_bool", fn_type, None);
-
-        let entry = self.context.append_basic_block(new_bool_fn, "entry");
-        self.builder.position_at_end(entry);
-
-        let ptr_to_int = self
-            .builder
-            .build_alloca(i64_type, "")
-            .expect("Could not allocate memory.");
-
-        let param = new_bool_fn.get_nth_param(0).unwrap().into_int_value();
-        let param_as_i64 = self
-            .builder
-            .build_int_cast(param, i64_type, "")
-            .expect("Could not convert bool to int.");
-        let _ = self.builder.build_store(ptr_to_int, param_as_i64);
-
-        let int_val = self
-            .builder
-            .build_load(ptr_to_int, "loaded")
-            .expect("Could not load value.")
-            .into_int_value();
-
-        let shift_bits = self.any_type_info["Bool"].shift;
-        let llvm_shift_bits = i64_type.const_int(shift_bits as u64, false);
-        let shifted_value = self
-            .builder
-            .build_left_shift(int_val, llvm_shift_bits, "")
-            .expect("Could not shift int value to left.");
-        let tag = self.any_type_info["Bool"].tag;
-        let llvm_tag = i64_type.const_int(tag as u64, false);
-        let tagged_value = self
-            .builder
-            .build_or(shifted_value, llvm_tag, "")
-            .expect("Could not tag int value.");
-
-        let tagged_ptr = self
-            .builder
-            .build_int_to_ptr(tagged_value, ptr_type, "")
-            .expect("Could not convert int to pointer.");
-
-        let _ = self.builder.build_return(Some(&tagged_ptr));
-
-        let _ = self.builder.position_at_end(main_entry);
-
-        Ok(new_bool_fn.as_any_value_enum())
-    }
-
-    fn build_object_is_int_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let params = &[BasicMetadataTypeEnum::PointerType(obj_ptr_type)];
-
-        let bool_type = self.context.bool_type();
-        let object_is_int_fn_type = bool_type.fn_type(params, false);
-        let object_is_int_fn =
-            self.module
-                .add_function("object_is_int", object_is_int_fn_type, None);
-
-        let entry_block = self.context.append_basic_block(object_is_int_fn, "entry");
-        self.builder.position_at_end(entry_block);
-
-        let object_ptr = object_is_int_fn.get_nth_param(0).unwrap();
-        let ptr_to_obj_ptr = self
-            .builder
-            .build_alloca(obj_ptr_type, "")
-            .expect("Could not allocate memory.");
-        let _ = self.builder.build_store(ptr_to_obj_ptr, object_ptr);
-        let copied_obj_ptr = self
-            .builder
-            .build_load(ptr_to_obj_ptr, "")
-            .expect("Could not load pointer.");
-        let obj_ptr_as_int = self
-            .builder
-            .build_ptr_to_int(
-                copied_obj_ptr.into_pointer_value(),
-                self.context.i64_type(),
-                "",
-            )
-            .expect("Could not convert pointer to integer.");
-        let tag_mask = self.any_type_info["Int"].tag_mask;
-        let llvm_tag_mask = self.context.i64_type().const_int(tag_mask.into(), false);
-        let obj_ptr_tag = self
-            .builder
-            .build_and(obj_ptr_as_int, llvm_tag_mask, "")
-            .expect("Could not perform 'and'.");
-        let tag = self.any_type_info["Int"].tag;
-        let llvm_tag = self.context.i64_type().const_int(tag as u64, false);
-        let is_int = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, obj_ptr_tag, llvm_tag, "")
-            .expect("Could not compare int values.");
-        let _ = self.builder.build_return(Some(&is_int));
-
-        self.builder.position_at_end(main_entry);
-
-        Ok(object_is_int_fn.as_any_value_enum())
-    }
-
-    fn build_object_as_int_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let i64_type = self.context.i64_type();
-        let object_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let fn_type = i64_type.fn_type(&[object_ptr_type.into()], false);
-        let object_as_int_fn = self.module.add_function("object_as_int", fn_type, None);
-
-        let entry = self.context.append_basic_block(object_as_int_fn, "entry");
-
-        let _ = self.builder.position_at_end(entry);
-
-        let ptr_to_object_ptr = self
-            .builder
-            .build_alloca(object_ptr_type, "")
-            .expect("Could not allocate memory.");
-
-        let object_ptr = object_as_int_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-
-        let _ = self.builder.build_store(ptr_to_object_ptr, object_ptr);
-
-        let copied_obj_ptr = self
-            .builder
-            .build_load(ptr_to_object_ptr, "")
-            .expect("Could not load value.");
-
-        let ptr_to_int = self
-            .builder
-            .build_ptr_to_int(copied_obj_ptr.into_pointer_value(), i64_type, "ptr_to_int")
-            .expect("Could not convert pointer to int.");
-
-        let shift_bits = self.any_type_info["Int"].shift;
-        let llvm_shift_bits = i64_type.const_int(shift_bits as u64, false);
-
-        let shifted_value = self
-            .builder
-            .build_right_shift(ptr_to_int, llvm_shift_bits, false, "")
-            .expect("Could not shift ptr right.");
-
-        let _ = self.builder.build_return(Some(&shifted_value));
-
-        self.builder.position_at_end(main_entry);
-
-        Ok(object_as_int_fn.as_any_value_enum())
-    }
-
-    fn build_new_int_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let i64_type = self.context.i64_type();
-        let ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
-        let new_int_fn = self.module.add_function("new_int", fn_type, None);
-
-        let entry = self.context.append_basic_block(new_int_fn, "entry");
-        self.builder.position_at_end(entry);
-
-        let ptr_to_int = self
-            .builder
-            .build_alloca(i64_type, "")
-            .expect("Could not allocate memory.");
-
-        let param = new_int_fn.get_nth_param(0).unwrap().into_int_value();
-        let _ = self.builder.build_store(ptr_to_int, param);
-
-        let int_val = self
-            .builder
-            .build_load(ptr_to_int, "loaded")
-            .expect("Could not load value.")
-            .into_int_value();
-
-        let shift_bits = self.any_type_info["Int"].shift;
-        let llvm_shift_bits = i64_type.const_int(shift_bits as u64, false);
-        let shifted_value = self
-            .builder
-            .build_left_shift(int_val, llvm_shift_bits, "")
-            .expect("Could not shift int value to left.");
-        let tag = self.any_type_info["Int"].tag;
-        let llvm_tag = i64_type.const_int(tag as u64, false);
-        let tagged_value = self
-            .builder
-            .build_or(shifted_value, llvm_tag, "")
-            .expect("Could not tag int value.");
-
-        let tagged_ptr = self
-            .builder
-            .build_int_to_ptr(tagged_value, ptr_type, "")
-            .expect("Could not convert int to pointer.");
-
-        let _ = self.builder.build_return(Some(&tagged_ptr));
-
-        let _ = self.builder.position_at_end(main_entry);
-
-        Ok(new_int_fn.as_any_value_enum())
-    }
-
-    fn build_object_is_heap_obj_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let params = &[BasicMetadataTypeEnum::PointerType(obj_ptr_type)];
-
-        let bool_type = self.context.bool_type();
-        let fn_type = bool_type.fn_type(params, false);
-        let object_is_heap_obj_fn = self
-            .module
-            .add_function("object_is_heap_obj", fn_type, None);
-
-        let entry_block = self
-            .context
-            .append_basic_block(object_is_heap_obj_fn, "entry");
-        self.builder.position_at_end(entry_block);
-
-        let object_ptr = object_is_heap_obj_fn.get_nth_param(0).unwrap();
-        let ptr_to_obj_ptr = self
-            .builder
-            .build_alloca(obj_ptr_type, "")
-            .expect("Could not allocate memory.");
-        let _ = self.builder.build_store(ptr_to_obj_ptr, object_ptr);
-        let copied_obj_ptr = self
-            .builder
-            .build_load(ptr_to_obj_ptr, "")
-            .expect("Could not load pointer.");
-        let obj_ptr_as_int = self
-            .builder
-            .build_ptr_to_int(
-                copied_obj_ptr.into_pointer_value(),
-                self.context.i64_type(),
-                "",
-            )
-            .expect("Could not convert pointer to integer.");
-        let tag_mask = self.any_type_info["Heap"].tag_mask;
-        let llvm_tag_mask = self.context.i64_type().const_int(tag_mask.into(), false);
-        let obj_ptr_tag = self
-            .builder
-            .build_and(obj_ptr_as_int, llvm_tag_mask, "")
-            .expect("Could not perform 'and'.");
-        let tag = self.any_type_info["Heap"].tag;
-        let llvm_tag = self.context.i64_type().const_int(tag as u64, false);
-        let is_heap_obj = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, obj_ptr_tag, llvm_tag, "")
-            .expect("Could not compare int values.");
-        let _ = self.builder.build_return(Some(&is_heap_obj));
-
-        self.builder.position_at_end(main_entry);
-
-        Ok(object_is_heap_obj_fn.as_any_value_enum())
-    }
-
-    fn build_object_address_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let i64_type = self.context.i64_type();
-        let any_obj_ptr_type = self.any_type.ptr_type(AddressSpace::default());
-        let object_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let fn_type = any_obj_ptr_type.fn_type(&[object_ptr_type.into()], false);
-        let object_address_fn = self.module.add_function("object_address", fn_type, None);
-
-        let entry = self.context.append_basic_block(object_address_fn, "entry");
-
-        let _ = self.builder.position_at_end(entry);
-
-        let ptr_to_object_ptr = self
-            .builder
-            .build_alloca(object_ptr_type, "")
-            .expect("Could not allocate memory.");
-
-        let object_ptr = object_address_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-
-        let _ = self.builder.build_store(ptr_to_object_ptr, object_ptr);
-
-        let copied_obj_ptr = self
-            .builder
-            .build_load(ptr_to_object_ptr, "")
-            .expect("Could not load value.");
-
-        let ptr_to_int = self
-            .builder
-            .build_ptr_to_int(copied_obj_ptr.into_pointer_value(), i64_type, "ptr_to_int")
-            .expect("Could not convert pointer to int.");
-
-        let tag_mask = !(self.any_type_info["Heap"].tag_mask as u64);
-        let llvm_tag_mask = i64_type.const_int(tag_mask, false);
-        let address_as_int = self
-            .builder
-            .build_and(ptr_to_int, llvm_tag_mask, "")
-            .expect("Could not build 'and'.");
-        let address_as_ptr = self
-            .builder
-            .build_int_to_ptr(address_as_int, any_obj_ptr_type, "")
-            .expect("Could not convert int to AnyType pointer.");
-        let _ = self.builder.build_return(Some(&address_as_ptr));
-
-        self.builder.position_at_end(main_entry);
-
-        Ok(object_address_fn.as_any_value_enum())
-    }
-
-    fn build_object_from_address_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let i64_type = self.context.i64_type();
-        let object_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-        let any_object_ptr_type = self.any_type.ptr_type(AddressSpace::default());
-
-        let fn_type = object_ptr_type.fn_type(&[any_object_ptr_type.into()], false);
-        let object_from_address_fn = self
-            .module
-            .add_function("object_from_address", fn_type, None);
-
-        let entry = self
-            .context
-            .append_basic_block(object_from_address_fn, "entry");
-
-        let _ = self.builder.position_at_end(entry);
-
-        let ptr_to_object_ptr = self
-            .builder
-            .build_alloca(any_object_ptr_type, "")
-            .expect("Could not allocate memory.");
-
-        let object_ptr = object_from_address_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-
-        let _ = self.builder.build_store(ptr_to_object_ptr, object_ptr);
-
-        let copied_obj_ptr = self
-            .builder
-            .build_load(ptr_to_object_ptr, "")
-            .expect("Could not load value.");
-
-        let ptr_to_int = self
-            .builder
-            .build_ptr_to_int(copied_obj_ptr.into_pointer_value(), i64_type, "ptr_to_int")
-            .expect("Could not convert pointer to int.");
-
-        let tag = self.any_type_info["Heap"].tag as u64;
-        let llvm_tag = i64_type.const_int(tag, false);
-        let heap_obj_as_int = self
-            .builder
-            .build_or(ptr_to_int, llvm_tag, "")
-            .expect("Could not build 'or'.");
-        let heap_obj_as_ptr = self
-            .builder
-            .build_int_to_ptr(heap_obj_as_int, object_ptr_type, "")
-            .expect("Could not convert int to Object pointer.");
-        let _ = self.builder.build_return(Some(&heap_obj_as_ptr));
-
-        self.builder.position_at_end(main_entry);
-
-        Ok(object_from_address_fn.as_any_value_enum())
-    }
-
-    fn build_object_type_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let i8_type = self.context.i8_type();
-        let object_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-
-        let fn_type = i8_type.fn_type(&[object_ptr_type.into()], false);
-        let object_type_fn = self.module.add_function("object_type", fn_type, None);
-
-        let entry = self.context.append_basic_block(object_type_fn, "entry");
-        let _ = self.builder.position_at_end(entry);
-
-        let ptr_to_object_ptr = self
-            .builder
-            .build_alloca(object_ptr_type, "")
-            .expect("Could not allocate memory.");
-        let type_ptr = self
-            .builder
-            .build_alloca(i8_type, "")
-            .expect("Could not allocate memory.");
-
-        let object_ptr = object_type_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-
-        let _ = self.builder.build_store(ptr_to_object_ptr, object_ptr);
-
-        let copied_obj_ptr = self
-            .builder
-            .build_load(ptr_to_object_ptr, "")
-            .expect("Could not load value.");
-
-        // Get type tester functions
-        let object_is_heap_obj_fn = self.module.get_function("object_is_heap_obj").unwrap();
-        let object_is_int_fn = self.module.get_function("object_is_int").unwrap();
-        let object_is_bool_fn = self.module.get_function("object_is_bool").unwrap();
-
-        // Create different condition blocks
-        let handle_heap_obj = self
-            .context
-            .append_basic_block(object_type_fn, "handle_heap_obj");
-        let test_int_obj = self
-            .context
-            .append_basic_block(object_type_fn, "test_int_obj");
-        let handle_int_obj = self
-            .context
-            .append_basic_block(object_type_fn, "handle_int_obj");
-        let test_bool_obj = self
-            .context
-            .append_basic_block(object_type_fn, "test_bool_obj");
-        let handle_bool_obj = self
-            .context
-            .append_basic_block(object_type_fn, "handle_bool_obj");
-        let handle_invalid_obj = self
-            .context
-            .append_basic_block(object_type_fn, "handle_invalid_obj");
-        let merge_block = self.context.append_basic_block(object_type_fn, "merge");
-
-        let is_heap_object = self
-            .builder
-            .build_call(object_is_heap_obj_fn, &[copied_obj_ptr.into()], "")
-            .expect("")
-            .as_any_value_enum();
-        let _ = self.builder.build_conditional_branch(
-            is_heap_object.into_int_value(),
-            handle_heap_obj,
-            test_int_obj,
-        );
-
-        // TEST BLOCKS
-        // test_int_obj
-        let _ = self.builder.position_at_end(test_int_obj);
-        let is_int_object = self
-            .builder
-            .build_call(object_is_int_fn, &[copied_obj_ptr.into()], "")
-            .expect("")
-            .as_any_value_enum();
-        let _ = self.builder.build_conditional_branch(
-            is_int_object.into_int_value(),
-            handle_int_obj,
-            test_bool_obj,
-        );
-
-        // test_bool_obj
-        let _ = self.builder.position_at_end(test_bool_obj);
-        let is_bool_object = self
-            .builder
-            .build_call(object_is_bool_fn, &[copied_obj_ptr.into()], "")
-            .expect("")
-            .as_any_value_enum();
-        let _ = self.builder.build_conditional_branch(
-            is_bool_object.into_int_value(),
-            handle_bool_obj,
-            handle_invalid_obj,
-        );
-
-        // HANDLE BLOCKS
-        // handle_heap_obj
-        let _ = self.builder.position_at_end(handle_heap_obj);
-        let obj_ptr = self
-            .builder
-            .build_load(ptr_to_object_ptr, "")
-            .expect("Could not load from pointer.");
-        let obj_address_fn = self.module.get_function("object_address").unwrap();
-        let any_obj_ptr = self
-            .builder
-            .build_call(obj_address_fn, &[obj_ptr.into()], "")
-            .expect("Could not get object address.")
-            .as_any_value_enum();
-        let ptr_to_type = self
-            .builder
-            .build_struct_gep(any_obj_ptr.into_pointer_value(), 0, "")
-            .expect("Could not get pointer to Any object type.");
-        let heap_obj_type = self
-            .builder
-            .build_load(ptr_to_type, "")
-            .expect("Could not load value.");
-        let _ = self.builder.build_store(type_ptr, heap_obj_type);
-        let _ = self.builder.build_unconditional_branch(merge_block);
-
-        // handle_int_obj
-        let _ = self.builder.position_at_end(handle_int_obj);
-        let int_type = i8_type.const_int(1, false);
-        let _ = self.builder.build_store(type_ptr, int_type);
-        let _ = self.builder.build_unconditional_branch(merge_block);
-
-        // handle_bool_obj
-        let _ = self.builder.position_at_end(handle_bool_obj);
-        let int_type = i8_type.const_int(0, false);
-        let _ = self.builder.build_store(type_ptr, int_type);
-        let _ = self.builder.build_unconditional_branch(merge_block);
-
-        // handle_invalid_obj
-        let _ = self.builder.position_at_end(handle_invalid_obj);
-        let _ = self.builder.build_unreachable();
-
-        // merge_block
-        let _ = self.builder.position_at_end(merge_block);
-        let type_val = self
-            .builder
-            .build_load(type_ptr, "")
-            .expect("Could not load value.");
-        let _ = self.builder.build_return(Some(&type_val));
-
-        self.builder.position_at_end(main_entry);
-
-        Ok(object_type_fn.as_any_value_enum())
-    }
-
-    fn build_object_is_str_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let bool_type = self.context.bool_type();
-        let i8_type = self.context.i8_type();
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-        let fn_type = bool_type.fn_type(&[obj_ptr_type.into()], false);
-        let object_is_str_fn = self.module.add_function("object_is_str", fn_type, None);
-        let entry = self.context.append_basic_block(object_is_str_fn, "entry");
-        let _ = self.builder.position_at_end(entry);
-
-        let param = object_is_str_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-        let ptr_to_obj_ptr = self
-            .builder
-            .build_alloca(obj_ptr_type, "")
-            .expect("Could not build alloc.");
-        let _ = self.builder.build_store(ptr_to_obj_ptr, param);
-        let obj_ptr = self
-            .builder
-            .build_load(ptr_to_obj_ptr, "")
-            .expect("Could not load pointer.");
-        let obj_type_fn = self.module.get_function("object_type").unwrap();
-        let obj_type = self
-            .builder
-            .build_call(obj_type_fn, &[obj_ptr.into()], "")
-            .expect("Could not get object type.")
-            .as_any_value_enum()
-            .into_int_value();
-        let str_type = i8_type.const_int(2, false);
-        let is_str = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, obj_type, str_type, "")
-            .expect("Could not compare types.");
-        let _ = self.builder.build_return(Some(&is_str));
-
-        let _ = self.builder.position_at_end(main_entry);
-        Ok(object_is_str_fn.as_any_value_enum())
-    }
-
-    fn build_object_is_float_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let bool_type = self.context.bool_type();
-        let i8_type = self.context.i8_type();
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-        let fn_type = bool_type.fn_type(&[obj_ptr_type.into()], false);
-        let object_is_float_fn = self.module.add_function("object_is_float", fn_type, None);
-        let entry = self.context.append_basic_block(object_is_float_fn, "entry");
-        let _ = self.builder.position_at_end(entry);
-
-        let param = object_is_float_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-        let ptr_to_obj_ptr = self
-            .builder
-            .build_alloca(obj_ptr_type, "")
-            .expect("Could not build alloc.");
-        let _ = self.builder.build_store(ptr_to_obj_ptr, param);
-        let obj_ptr = self
-            .builder
-            .build_load(ptr_to_obj_ptr, "")
-            .expect("Could not load pointer.");
-        let obj_type_fn = self.module.get_function("object_type").unwrap();
-        let obj_type = self
-            .builder
-            .build_call(obj_type_fn, &[obj_ptr.into()], "")
-            .expect("Could not get object type.")
-            .as_any_value_enum()
-            .into_int_value();
-        let float_type = i8_type.const_int(3, false);
-        let is_float = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, obj_type, float_type, "")
-            .expect("Could not compare types.");
-        let _ = self.builder.build_return(Some(&is_float));
-
-        let _ = self.builder.position_at_end(main_entry);
-        Ok(object_is_float_fn.as_any_value_enum())
-    }
-
-    fn build_object_as_str_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
-        let ptr_to_i8_ptr_type = i8_ptr_type.ptr_type(AddressSpace::default());
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-        let fn_type = i8_ptr_type.fn_type(&[obj_ptr_type.into()], false);
-        let object_as_str_fn = self.module.add_function("object_as_str", fn_type, None);
-        let entry = self.context.append_basic_block(object_as_str_fn, "entry");
-        let _ = self.builder.position_at_end(entry);
-
-        let param = object_as_str_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-        let ptr_to_obj_ptr = self
-            .builder
-            .build_alloca(obj_ptr_type, "")
-            .expect("Could not build alloc.");
-        let _ = self.builder.build_store(ptr_to_obj_ptr, param);
-        let obj_ptr = self
-            .builder
-            .build_load(ptr_to_obj_ptr, "")
-            .expect("Could not load pointer.");
-        let obj_address_fn = self.module.get_function("object_address").unwrap();
-        let any_obj_ptr = self
-            .builder
-            .build_call(obj_address_fn, &[obj_ptr.into()], "")
-            .expect("Could not get object address.")
-            .as_any_value_enum();
-        let ptr_to_val = self
-            .builder
-            .build_struct_gep(any_obj_ptr.into_pointer_value(), 1, "")
-            .expect("Could not get value of AnyType pointer.");
-        let ptr_to_str = self
-            .builder
-            .build_bit_cast(ptr_to_val, ptr_to_i8_ptr_type, "")
-            .expect("Could not cast value to string.");
-        let str_value = self
-            .builder
-            .build_load(ptr_to_str.into_pointer_value(), "")
-            .expect("Could not load value.");
-        let _ = self.builder.build_return(Some(&str_value));
-
-        let _ = self.builder.position_at_end(main_entry);
-
-        Ok(object_as_str_fn.as_any_value_enum())
-    }
-
-    fn build_object_as_float_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let float_type = self.context.f64_type();
-        let float_ptr_type = float_type.ptr_type(AddressSpace::default());
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-        let fn_type = float_type.fn_type(&[obj_ptr_type.into()], false);
-        let object_as_float_fn = self.module.add_function("object_as_float", fn_type, None);
-        let entry = self.context.append_basic_block(object_as_float_fn, "entry");
-        let _ = self.builder.position_at_end(entry);
-
-        let param = object_as_float_fn
-            .get_nth_param(0)
-            .unwrap()
-            .into_pointer_value();
-        let ptr_to_obj_ptr = self
-            .builder
-            .build_alloca(obj_ptr_type, "")
-            .expect("Could not build alloc.");
-        let _ = self.builder.build_store(ptr_to_obj_ptr, param);
-        let obj_ptr = self
-            .builder
-            .build_load(ptr_to_obj_ptr, "")
-            .expect("Could not load pointer.");
-        let obj_address_fn = self.module.get_function("object_address").unwrap();
-        let any_obj_ptr = self
-            .builder
-            .build_call(obj_address_fn, &[obj_ptr.into()], "")
-            .expect("Could not get object address.")
-            .as_any_value_enum();
-        let ptr_to_val = self
-            .builder
-            .build_struct_gep(any_obj_ptr.into_pointer_value(), 1, "")
-            .expect("Could not get value of AnyType pointer.");
-        let ptr_to_str = self
-            .builder
-            .build_bit_cast(ptr_to_val, float_ptr_type, "")
-            .expect("Could not cast value to float.");
-        let str_value = self
-            .builder
-            .build_load(ptr_to_str.into_pointer_value(), "")
-            .expect("Could not load value.");
-        let _ = self.builder.build_return(Some(&str_value));
-
-        let _ = self.builder.position_at_end(main_entry);
-
-        Ok(object_as_float_fn.as_any_value_enum())
-    }
-
-    fn build_new_str_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
-        let ptr_to_i8_ptr_type = i8_ptr_type.ptr_type(AddressSpace::default());
-        let any_ptr_type = self.any_type.ptr_type(AddressSpace::default());
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-        let fn_type = obj_ptr_type.fn_type(&[i8_ptr_type.into()], false);
-        let new_str_fn = self.module.add_function("new_str", fn_type, None);
-        let entry = self.context.append_basic_block(new_str_fn, "entry");
-        let _ = self.builder.position_at_end(entry);
-
-        let param = new_str_fn.get_nth_param(0).unwrap().into_pointer_value();
-
-        let ptr_to_any_obj_ptr = self
-            .builder
-            .build_alloca(any_ptr_type, "")
-            .expect("Could not allocate memory.");
-        let any_obj_ptr = self
-            .builder
-            .build_malloc(self.any_type, "")
-            .expect("Could not perform malloc.");
-        let _ = self.builder.build_store(ptr_to_any_obj_ptr, any_obj_ptr);
-
-        let str_type = self.context.i8_type().const_int(2, false);
-        let type_ptr = self
-            .builder
-            .build_struct_gep(any_obj_ptr, 0, "")
-            .expect("Could not get pointer to type tag.");
-        let _ = self.builder.build_store(type_ptr, str_type);
-
-        let value_ptr = self
-            .builder
-            .build_struct_gep(any_obj_ptr, 1, "")
-            .expect("Could not get pointer to value of AnyType.");
-        let value_ptr_as_str_ptr = self
-            .builder
-            .build_bit_cast(value_ptr, ptr_to_i8_ptr_type, "")
-            .expect("Could not cast pointer to string pointer type.")
-            .into_pointer_value();
-        let _ = self.builder.build_store(value_ptr_as_str_ptr, param);
-        let any_obj = self
-            .builder
-            .build_load(ptr_to_any_obj_ptr, "")
-            .expect("Could not load pointer");
-        let obj_from_address = self.module.get_function("object_from_address").unwrap();
-        let str_as_obj = self
-            .builder
-            .build_call(obj_from_address, &[any_obj.into()], "")
-            .expect("Could not make call to object_from_address.")
-            .as_any_value_enum()
-            .into_pointer_value();
-        let _ = self.builder.build_return(Some(&str_as_obj));
-
-        let _ = self.builder.position_at_end(main_entry);
-
-        Ok(new_str_fn.as_any_value_enum())
-    }
-
-    fn build_new_float_fn(&self) -> IRGenResult<'_> {
-        let main_entry = self
-            .builder
-            .get_insert_block()
-            .expect("Builder not attached to entry point.");
-
-        let f64_type = self.context.f64_type();
-        let f64_ptr_type = f64_type.ptr_type(AddressSpace::default());
-        let any_ptr_type = self.any_type.ptr_type(AddressSpace::default());
-        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
-        let fn_type = obj_ptr_type.fn_type(&[f64_type.into()], false);
-        let new_float_fn = self.module.add_function("new_float", fn_type, None);
-        let entry = self.context.append_basic_block(new_float_fn, "entry");
-        let _ = self.builder.position_at_end(entry);
-
-        let param = new_float_fn.get_nth_param(0).unwrap().into_float_value();
-
-        let ptr_to_any_obj_ptr = self
-            .builder
-            .build_alloca(any_ptr_type, "")
-            .expect("Could not allocate memory.");
-        let any_obj_ptr = self
-            .builder
-            .build_malloc(self.any_type, "")
-            .expect("Could not perform malloc.");
-        let _ = self.builder.build_store(ptr_to_any_obj_ptr, any_obj_ptr);
-
-        let float_type = self.context.i8_type().const_int(3, false);
-        let type_ptr = self
-            .builder
-            .build_struct_gep(any_obj_ptr, 0, "")
-            .expect("Could not get pointer to type tag.");
-        let _ = self.builder.build_store(type_ptr, float_type);
-
-        let value_ptr = self
-            .builder
-            .build_struct_gep(any_obj_ptr, 1, "")
-            .expect("Could not get pointer to value of AnyType.");
-        let value_ptr_as_float_ptr = self
-            .builder
-            .build_bit_cast(value_ptr, f64_ptr_type, "")
-            .expect("Could not cast pointer to float pointer type.")
-            .into_pointer_value();
-        let _ = self.builder.build_store(value_ptr_as_float_ptr, param);
-        let any_obj = self
-            .builder
-            .build_load(ptr_to_any_obj_ptr, "")
-            .expect("Could not load pointer");
-        let obj_from_address = self.module.get_function("object_from_address").unwrap();
-        let float_as_obj = self
-            .builder
-            .build_call(obj_from_address, &[any_obj.into()], "")
-            .expect("Could not make call to object_from_address.")
-            .as_any_value_enum()
-            .into_pointer_value();
-        let _ = self.builder.build_return(Some(&float_as_obj));
-
-        let _ = self.builder.position_at_end(main_entry);
-
-        Ok(new_float_fn.as_any_value_enum())
-    }
-}
-
-#[derive(Debug)]
-struct TypeInfo {
-    pub tag: u8,
-    pub tag_mask: u8,
-    pub shift: i64,
-}
-
-impl TypeInfo {
-    pub fn new(tag: u8, tag_mask: u8, shift: i64) -> Self {
-        Self {
-            tag,
-            tag_mask,
-            shift,
-        }
-    }
-}
-
-/**
- * Map for all Any type stuff.
- */
-fn create_type_info_hashmap() -> HashMap<String, TypeInfo> {
-    HashMap::from([
-        ("Bool".to_string(), TypeInfo::new(0 as u8, 1 as u8, 2)),
-        ("Int".to_string(), TypeInfo::new(1 as u8, 1 as u8, 1)),
-        ("Heap".to_string(), TypeInfo::new(2 as u8, 2 as u8, 2)),
-    ])
 }

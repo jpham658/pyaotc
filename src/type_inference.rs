@@ -4,10 +4,15 @@ use std::{
     hash::Hash,
 };
 
-use rustpython_parser::ast::{
-    located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, Stmt, StmtExpr,
-    StmtFunctionDef, StmtIf, StmtReturn, StmtWhile, TextSize,
+use rustpython_parser::{
+    ast::{
+        located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, Ranged, Stmt, StmtExpr,
+        StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile, TextSize,
+    },
+    text_size::TextRange,
 };
+
+use crate::rule_typing::{get_inferred_rule_types, infer_stmts_with_rules, RuleEnv};
 
 //  ====================================================
 //                      ERROR TYPES
@@ -71,8 +76,7 @@ pub enum Type {
  * Used for rule typing to find types of r-values and slices.
  * TODO: Should I extend this for every node in the AST?
  */
-pub type AstNodeType = (TextSize, TextSize);
-pub type NodeTypeDB = HashMap<AstNodeType, Type>;
+pub type NodeTypeDB = HashMap<TextRange, Type>;
 
 /**
  * Substitution of type vars to other types.
@@ -147,6 +151,9 @@ pub fn infer_types(
     type_db: &mut NodeTypeDB,
 ) -> Result<Type, InferenceError> {
     let (sub, inferred_type) = inferrer.infer_stmt(env, stmt, type_db)?;
+    for (_, typ) in type_db.iter_mut() {
+        *typ = apply(&sub, typ);
+    }
     Ok(apply(&sub, &inferred_type))
 }
 
@@ -210,7 +217,7 @@ impl TypeInferrer {
         if func_name.eq("len") {
             return Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Int)));
         }
-        
+
         if func_name.eq("range") {
             let int_type = Type::ConcreteType(ConcreteValue::Int);
             let mut sub = Sub::new();
@@ -219,21 +226,18 @@ impl TypeInferrer {
                 let (arg_sub, arg_type) = self.infer_expression(&env, arg)?;
                 let unifier = match unify(&arg_type, &int_type) {
                     Ok(sub) => sub,
-                    Err(..) => Sub::new()
+                    Err(..) => Sub::new(),
                 };
                 sub = compose_subs(&arg_sub, &unifier);
             }
-            return Ok((
-                sub,
-                Type::Sequence(Box::new(int_type)),
-            ));
+            return Ok((sub, Type::Sequence(Box::new(int_type))));
         }
-        
+
         let (sub1, type1) = self.infer_expression(env, func)?;
-        
+
         // func_name is always gonna have a scheme returned
         let scheme_type1;
-        
+
         match &type1 {
             Type::Scheme(scheme) => match &*scheme.type_name {
                 Type::ConcreteType(..) => return Ok((sub1, type1.clone())),
@@ -246,7 +250,6 @@ impl TypeInferrer {
                 })
             }
         }
-        
 
         let mut composite_subs = sub1.clone();
         let mut arg_types = Vec::new();
@@ -291,6 +294,7 @@ impl TypeInferrer {
         func: &StmtFunctionDef,
         type_db: &mut NodeTypeDB,
     ) -> TypeInferenceRes {
+        let mut rule_env = RuleEnv::new();
         let args = &func.args.args;
         let arg_types = args
             .iter()
@@ -320,6 +324,21 @@ impl TypeInferrer {
             let (sub, _) = self.infer_stmt(&mut extended_env, stmt, type_db)?;
             subs = compose_subs(&subs, &sub);
             extended_env = apply_to_type_env(&subs, &extended_env);
+        }
+        apply_to_type_db(&subs, type_db);
+
+        // infer with rules too
+        if let Err(e) = infer_stmts_with_rules(&mut rule_env, &func.body, &type_db) {
+            eprintln!("RuleInferrenceError: {}", e.message);
+            return Err(InferenceError { message: e.message });
+        }
+        let inferred_rule_types = get_inferred_rule_types(&mut rule_env);
+
+        // unify all types inferred from rules with types in the type env
+        for (name, scheme) in inferred_rule_types {
+            let curr_type = extended_env.get(&name).unwrap();
+            let unifier = unify(&scheme.type_name, &curr_type.type_name)?;
+            subs = compose_subs(&subs, &unifier);
         }
 
         let return_type: Type;
@@ -471,6 +490,27 @@ impl TypeInferrer {
                 let composed_sub = compose_subs(&sub, &unifier);
                 Ok((composed_sub, inferred_type))
             }
+            Expr::Subscript(subscript) => match self.infer_expression(env, &subscript.value) {
+                Ok((sub, typ)) => match typ {
+                    Type::Sequence(elt_typ) => Ok((sub, *elt_typ.clone())),
+                    Type::Mapping(_, val_typ) => Ok((sub, *val_typ.clone())),
+                    Type::ConcreteType(ConcreteValue::Str) => {
+                        Ok((sub, Type::ConcreteType(ConcreteValue::Str)))
+                    }
+                    _ => {
+                        // Assign a fresh var to the subscript, this will unify with the context it's used in
+                        let fresh_var = self.fresh_var_generator.next();
+                        Ok((
+                            sub,
+                            Type::Scheme(Scheme {
+                                type_name: Box::new(Type::TypeVar(TypeVar(fresh_var))),
+                                bounded_vars: BTreeSet::new(),
+                            }),
+                        ))
+                    }
+                },
+                Err(e) => Err(e),
+            },
             Expr::List(list) => {
                 if list.elts.is_empty() {
                     let typevar = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
@@ -525,7 +565,7 @@ impl TypeInferrer {
         match stmt {
             Stmt::Assign(assign) => {
                 let (rhs_sub, rhs_type) = self.infer_expression(env, &assign.value)?;
-                let new_env;
+                let mut new_env = env.clone();
                 let var;
                 let target = &assign.targets[0];
                 match target {
@@ -534,45 +574,18 @@ impl TypeInferrer {
                         new_env = remove(&var, env);
                     }
                     Expr::Subscript(subscript) => {
-                        let (slice_sub, slice_type) =
-                            self.infer_expression(env, &subscript.slice)?;
+                        let slice = *subscript.slice.clone();
+                        let (slice_sub, slice_type) = self.infer_expression(env, &slice)?;
                         let mut subscript_sub = compose_subs(&slice_sub, &rhs_sub);
                         let mut subscript_type = Type::ConcreteType(ConcreteValue::None);
 
                         if subscript.value.is_name_expr() {
-                            var = &subscript.value.as_name_expr().unwrap().id.as_str();
-                            match env.get(var) {
-                                None => return Ok((subscript_sub, rhs_type)), // TODO: Figure out how to do this better...
-                                Some(scheme) => {
-                                    let typename = scheme.type_name.clone();
-
-                                    match *typename {
-                                        Type::Sequence(..) => {
-                                            subscript_sub = unify(
-                                                &typename,
-                                                &Type::Sequence(Box::new(rhs_type.clone())),
-                                            )?;
-                                            subscript_type = *typename.clone()
-                                        }
-                                        Type::Mapping(..) => {
-                                            subscript_sub = unify(
-                                                &typename,
-                                                &Type::Mapping(
-                                                    Box::new(slice_type.clone()),
-                                                    Box::new(rhs_type.clone()),
-                                                ),
-                                            )?;
-                                            subscript_type = *typename.clone()
-                                        }
-                                        _ => {
-                                            return Err(InferenceError {
-                                                message: "Type is not indexable.".to_string(),
-                                            })
-                                        }
-                                    }
-                                }
-                            }
+                            // add info about aggregate type to type db
+                            type_db.insert(slice.range(), slice_type);
+                            type_db.insert(subscript.range(), rhs_type.clone());
+                            return Ok((subscript_sub, rhs_type)); // TODO: Figure out how to do this better...
                         }
+
                         return Ok((subscript_sub, subscript_type));
                     }
                     _ => {
@@ -610,6 +623,37 @@ impl TypeInferrer {
                     Err(_) => func_type,
                 }
             }
+            Stmt::For(StmtFor {
+                iter,
+                body,
+                orelse,
+                target,
+                ..
+            }) => {
+                let (iter_sub, iter_type) = self.infer_expression(env, iter)?;
+                // TODO: So here, we need to infer the type of the iterator
+                // if it has a concrete element type, we can just infer the target type straight away
+                // otherwise, if it does exist, we take the iterator element type
+                // else we assign a typevar to target and make this the element type of iter
+
+                let mut inferred_body_and_or_else = body
+                    .into_iter()
+                    .map(|stmt| self.infer_stmt(env, stmt, type_db))
+                    .collect::<Vec<_>>();
+                let inferred_or_else = orelse
+                    .into_iter()
+                    .map(|stmt| self.infer_stmt(env, stmt, type_db))
+                    .collect::<Vec<_>>();
+                inferred_body_and_or_else.extend(inferred_or_else);
+                let composed_sub = inferred_body_and_or_else
+                    .into_iter()
+                    .map(|res| match res {
+                        Ok((sub, _)) => sub,
+                        Err(..) => Sub::new(),
+                    })
+                    .fold(Sub::new(), |acc, sub| compose_subs(&acc, &sub));
+                Ok((composed_sub, Type::ConcreteType(ConcreteValue::None)))
+            }
             Stmt::While(StmtWhile {
                 test, body, orelse, ..
             })
@@ -620,16 +664,19 @@ impl TypeInferrer {
                 let mut new_env = apply_to_type_env(&inferred_test_sub, env);
                 let mut inferred_body_and_or_else = body
                     .into_iter()
-                    .map(|stmt| self.infer_stmt(&mut new_env, stmt, type_db).unwrap())
+                    .map(|stmt| self.infer_stmt(&mut new_env, stmt, type_db))
                     .collect::<Vec<_>>();
                 let inferred_or_else = orelse
                     .into_iter()
-                    .map(|stmt| self.infer_stmt(&mut new_env, stmt, type_db).unwrap())
+                    .map(|stmt| self.infer_stmt(&mut new_env, stmt, type_db))
                     .collect::<Vec<_>>();
                 inferred_body_and_or_else.extend(inferred_or_else);
                 let composed_sub = inferred_body_and_or_else
                     .into_iter()
-                    .map(|(sub, _)| sub)
+                    .map(|res| match res {
+                        Ok((sub, _)) => sub,
+                        Err(..) => Sub::new(),
+                    })
                     .fold(inferred_test_sub, |acc, sub| compose_subs(&acc, &sub));
                 Ok((composed_sub, Type::ConcreteType(ConcreteValue::None)))
             }
@@ -661,6 +708,19 @@ impl TypeInferrer {
 //  ====================================================
 //                  HELPER FUNCTIONS
 //  ====================================================
+
+/**
+ * Helper to apply subs to all types in type DB
+ */
+/**
+ * Helper to apply a substitution for a given type environment.
+ */
+pub fn apply_to_type_db(sub: &Sub, type_db: &mut NodeTypeDB) {
+    type_db.iter_mut().for_each(|(_, val)| {
+        *val = apply(sub, val);
+    });
+}
+
 /**
  * Helper to verify a type annotation
  */
@@ -756,11 +816,7 @@ pub fn apply(sub: &Sub, typ: &Type) -> Type {
         }
         Type::Sequence(elt_type) => {
             let subbed_elt_type = apply(sub, elt_type);
-            let seq_type = Type::Sequence(Box::new(subbed_elt_type));
-            Type::Scheme(Scheme {
-                type_name: Box::new(seq_type),
-                bounded_vars: BTreeSet::new(),
-            })
+            Type::Sequence(Box::new(subbed_elt_type))
         }
         _ => type_clone,
     }
