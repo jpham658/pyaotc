@@ -1,7 +1,7 @@
 /**
  * File used to define LLVM used for generic Object class
  */
-
+#ifndef OBJECT_H
 #define OBJECT_H
 
 #include <stdbool.h>;
@@ -23,17 +23,6 @@
 
 struct Object;
 typedef struct Object Object;
-
-typedef struct
-{
-    int type;
-    union
-    {
-        int int_value;
-        double doub_value;
-        bool bool_value;
-    };
-} AnyObject;
 
 typedef uintptr_t uword;
 typedef intptr_t word;
@@ -236,3 +225,4 @@ void print_heap_obj(HeapObject *heap_obj)
         printf("Not valid heap object.");
     }
 }
+#endif
