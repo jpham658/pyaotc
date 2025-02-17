@@ -1,15 +1,13 @@
 use std::{
     any::Any,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     hash::Hash,
 };
 
 use rustpython_parser::ast::{
     located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, Stmt, StmtExpr,
-    StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
+    StmtFunctionDef, StmtIf, StmtReturn, StmtWhile, TextSize,
 };
-
-use crate::{astutils::GetReturnStmts, codegen::typed_codegen};
 
 //  ====================================================
 //                      ERROR TYPES
@@ -27,7 +25,6 @@ pub struct InferenceError {
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub enum ConcreteValue {
-    // TODO: Extend for other constant types
     Int,
     Bool,
     Str,
@@ -66,8 +63,16 @@ pub enum Type {
     Undefined,
     Sequence(Box<Type>),
     Set(Box<Type>),
-    Mapping(Box<Type>), // TODO: Technically should be <K,V>
+    Mapping(Box<Type>, Box<Type>),
 }
+
+/**
+ * A database that maps nodes to types.
+ * Used for rule typing to find types of r-values and slices.
+ * TODO: Should I extend this for every node in the AST?
+ */
+pub type AstNodeType = (TextSize, TextSize);
+pub type NodeTypeDB = HashMap<AstNodeType, Type>;
 
 /**
  * Substitution of type vars to other types.
@@ -77,9 +82,14 @@ pub type Sub = HashMap<String, Type>;
 //  ====================================================
 //                     TYPE INFERRER
 //  ====================================================
-pub fn infer_ast_types(inferrer: &mut TypeInferrer, env: &mut TypeEnv, ast: &[Stmt]) {
+pub fn infer_ast_types(
+    inferrer: &mut TypeInferrer,
+    env: &mut TypeEnv,
+    ast: &[Stmt],
+    type_db: &mut NodeTypeDB,
+) {
     for stmt in ast {
-        match infer_types(inferrer, env, &stmt) {
+        match infer_types(inferrer, env, &stmt, type_db) {
             Ok(typ) => match &stmt {
                 Stmt::FunctionDef(funcdef) => {
                     let func_name = funcdef.name.as_str().to_string();
@@ -134,8 +144,9 @@ pub fn infer_types(
     inferrer: &mut TypeInferrer,
     env: &mut TypeEnv,
     stmt: &Stmt,
+    type_db: &mut NodeTypeDB,
 ) -> Result<Type, InferenceError> {
-    let (sub, inferred_type) = inferrer.infer_stmt(env, stmt)?;
+    let (sub, inferred_type) = inferrer.infer_stmt(env, stmt, type_db)?;
     Ok(apply(&sub, &inferred_type))
 }
 
@@ -196,11 +207,33 @@ impl TypeInferrer {
             return Ok((Sub::new(), Type::ConcreteType(ConcreteValue::None)));
         }
 
+        if func_name.eq("len") {
+            return Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Int)));
+        }
+        
+        if func_name.eq("range") {
+            let int_type = Type::ConcreteType(ConcreteValue::Int);
+            let mut sub = Sub::new();
+            for arg in &call.args {
+                let env = apply_to_type_env(&sub, env);
+                let (arg_sub, arg_type) = self.infer_expression(&env, arg)?;
+                let unifier = match unify(&arg_type, &int_type) {
+                    Ok(sub) => sub,
+                    Err(..) => Sub::new()
+                };
+                sub = compose_subs(&arg_sub, &unifier);
+            }
+            return Ok((
+                sub,
+                Type::Sequence(Box::new(int_type)),
+            ));
+        }
+        
         let (sub1, type1) = self.infer_expression(env, func)?;
-
+        
         // func_name is always gonna have a scheme returned
         let scheme_type1;
-
+        
         match &type1 {
             Type::Scheme(scheme) => match &*scheme.type_name {
                 Type::ConcreteType(..) => return Ok((sub1, type1.clone())),
@@ -213,6 +246,7 @@ impl TypeInferrer {
                 })
             }
         }
+        
 
         let mut composite_subs = sub1.clone();
         let mut arg_types = Vec::new();
@@ -251,7 +285,12 @@ impl TypeInferrer {
     /**
      * Helper to infer the types of a given function definition.
      */
-    pub fn infer_function(&mut self, env: &TypeEnv, func: &StmtFunctionDef) -> TypeInferenceRes {
+    pub fn infer_function(
+        &mut self,
+        env: &TypeEnv,
+        func: &StmtFunctionDef,
+        type_db: &mut NodeTypeDB,
+    ) -> TypeInferenceRes {
         let args = &func.args.args;
         let arg_types = args
             .iter()
@@ -278,7 +317,7 @@ impl TypeInferrer {
 
         // inferring function body
         for stmt in &func.body {
-            let (sub, _) = self.infer_stmt(&mut extended_env, stmt)?;
+            let (sub, _) = self.infer_stmt(&mut extended_env, stmt, type_db)?;
             subs = compose_subs(&subs, &sub);
             extended_env = apply_to_type_env(&subs, &extended_env);
         }
@@ -477,7 +516,12 @@ impl TypeInferrer {
         }
     }
 
-    pub fn infer_stmt(&mut self, env: &mut TypeEnv, stmt: &Stmt) -> TypeInferenceRes {
+    pub fn infer_stmt(
+        &mut self,
+        env: &mut TypeEnv,
+        stmt: &Stmt,
+        type_db: &mut NodeTypeDB,
+    ) -> TypeInferenceRes {
         match stmt {
             Stmt::Assign(assign) => {
                 let (rhs_sub, rhs_type) = self.infer_expression(env, &assign.value)?;
@@ -490,8 +534,9 @@ impl TypeInferrer {
                         new_env = remove(&var, env);
                     }
                     Expr::Subscript(subscript) => {
-                        let (sliced_sub, _) = self.infer_expression(env, &subscript.slice)?;
-                        let mut subscript_sub = compose_subs(&sliced_sub, &rhs_sub);
+                        let (slice_sub, slice_type) =
+                            self.infer_expression(env, &subscript.slice)?;
+                        let mut subscript_sub = compose_subs(&slice_sub, &rhs_sub);
                         let mut subscript_type = Type::ConcreteType(ConcreteValue::None);
 
                         if subscript.value.is_name_expr() {
@@ -512,7 +557,10 @@ impl TypeInferrer {
                                         Type::Mapping(..) => {
                                             subscript_sub = unify(
                                                 &typename,
-                                                &Type::Mapping(Box::new(rhs_type.clone())),
+                                                &Type::Mapping(
+                                                    Box::new(slice_type.clone()),
+                                                    Box::new(rhs_type.clone()),
+                                                ),
                                             )?;
                                             subscript_type = *typename.clone()
                                         }
@@ -552,7 +600,7 @@ impl TypeInferrer {
                         bounded_vars: BTreeSet::new(),
                     },
                 );
-                let func_type = self.infer_function(&new_env, funcdef);
+                let func_type = self.infer_function(&new_env, funcdef, type_db);
                 match &func_type {
                     Ok((_, typ)) => {
                         let generalised_functype = generalise(typ, env);
@@ -572,11 +620,11 @@ impl TypeInferrer {
                 let mut new_env = apply_to_type_env(&inferred_test_sub, env);
                 let mut inferred_body_and_or_else = body
                     .into_iter()
-                    .map(|stmt| self.infer_stmt(&mut new_env, stmt).unwrap())
+                    .map(|stmt| self.infer_stmt(&mut new_env, stmt, type_db).unwrap())
                     .collect::<Vec<_>>();
                 let inferred_or_else = orelse
                     .into_iter()
-                    .map(|stmt| self.infer_stmt(&mut new_env, stmt).unwrap())
+                    .map(|stmt| self.infer_stmt(&mut new_env, stmt, type_db).unwrap())
                     .collect::<Vec<_>>();
                 inferred_body_and_or_else.extend(inferred_or_else);
                 let composed_sub = inferred_body_and_or_else
