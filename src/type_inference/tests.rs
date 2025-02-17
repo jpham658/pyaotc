@@ -460,6 +460,56 @@ def return_string_or_bool(x):
         assert_eq!(expected_type, inferred_type);
     }
 
+    #[test]
+    fn infer_range_call() {
+        let mut type_inferrer = TypeInferrer::new();
+        let mut env = TypeEnv::new();
+        let x_id = (TextSize::new(3), TextSize::new(4));
+        env.insert(
+            x_id,
+            Scheme {
+                type_name: Box::new(Type::TypeVar(TypeVar("v0".to_string()))),
+                bounded_vars: BTreeSet::new(),
+            },
+        );
+        let call = ExprCall {
+            range: DEFAULT_RANGE,
+            func: Box::new(Expr::Name(ExprName {
+                range: DEFAULT_RANGE,
+                id: Identifier::new("range"),
+                ctx: DEFAULT_NAME_CTX,
+            })),
+            args: vec![Expr::Name(ExprName {
+                ctx: DEFAULT_NAME_CTX,
+                id: Identifier::new("x"),
+                range: DEFAULT_RANGE,
+            })],
+            keywords: vec![],
+        };
+        let assign = Stmt::Assign(StmtAssign {
+            range: DEFAULT_RANGE,
+            targets: vec![Expr::Name(ExprName {
+                range: DEFAULT_RANGE,
+                id: Identifier::new("y"),
+                ctx: ExprContext::Store,
+            })],
+            value: Box::new(Expr::Call(call)),
+            type_comment: None,
+        });
+        let (sub, inferred_type) = type_inferrer
+            .infer_stmt(&mut env, &assign)
+            .expect("Inferrence should not fail.");
+        let expected_type = Type::Scheme(Scheme {
+            type_name: Box::new(Type::Sequence(Box::new(Type::ConcreteType(
+                ConcreteValue::Int,
+            )))),
+            bounded_vars: BTreeSet::new(),
+        });
+        let expected_sub = Sub::from([("v0".to_string(), Type::ConcreteType(ConcreteValue::Int))]);
+        assert_eq!(expected_sub, sub);
+        assert_eq!(expected_type, inferred_type);
+    }
+
     /**
      * Inferrence test helpers.
      */
