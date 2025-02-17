@@ -10,9 +10,11 @@ use std::path::Path;
 
 use crate::codegen::error::{BackendError, IRGenResult};
 use crate::codegen::generic_codegen::LLVMGenericCodegen;
-use crate::codegen::generic_ops::build_generic_op::{get_generic_cmp_ops_ir, get_generic_ops_ir, get_generic_uops_ir};
+use crate::codegen::generic_ops::build_generic_op::{
+    get_generic_cmp_ops_ir, get_generic_ops_ir, get_generic_uops_ir,
+};
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
-use crate::type_inference::Type;
+use crate::type_inference::TypeEnv;
 
 // TODO: Move this to separate file
 fn get_prereq_llvm_ir() -> String {
@@ -613,6 +615,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let any_type = context.get_struct_type("struct.HeapObject").unwrap();
         let object_type = context.get_struct_type("struct.Object").unwrap(); // Should not fail if context is set up properly.
+        let list_type = context.struct_type(&[], false);
 
         let any_type_info = create_type_info_hashmap();
 
@@ -629,7 +632,7 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub fn compile(&self, ast: &[Stmt], types: &HashMap<String, Type>) {
+    pub fn compile(&self, ast: &[Stmt], types: &TypeEnv) {
         let i32_type = self.context.i32_type();
         // self.setup_compiler();
 

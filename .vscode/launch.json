@@ -9,7 +9,7 @@
             "request": "launch",
             "name": "Debug",
             "program": "${workspaceRoot}/target/debug/${workspaceRootFolderName}",
-            "args": [],
+            "args": ["/home/ohmaigod/pyaotc/examples/factorial.py"],
             "cwd": "${workspaceRoot}/target/debug/",
             "sourceLanguages": [
                 "rust"

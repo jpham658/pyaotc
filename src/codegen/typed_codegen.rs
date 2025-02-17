@@ -1,4 +1,4 @@
-use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, FloatType};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue, IntValue};
 use inkwell::AddressSpace;
 use malachite_bigint;
@@ -14,7 +14,7 @@ use crate::compiler::Compiler;
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
 use crate::compiler_utils::set_symtable_ptrs::set_variable_pointers_in_symbol_table;
-use crate::type_inference::{ConcreteValue, Scheme, Type};
+use crate::type_inference::{ConcreteValue, Scheme, Type, TypeEnv};
 
 use super::error::{BackendError, IRGenResult};
 use super::generic_codegen::LLVMGenericCodegen;
@@ -23,7 +23,7 @@ pub trait LLVMTypedCodegen {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir>;
 }
 
@@ -31,7 +31,7 @@ impl LLVMTypedCodegen for Stmt {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match self {
             Stmt::Expr(StmtExpr { value, .. }) => value.typed_codegen(compiler, types),
@@ -60,7 +60,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         // save main entry point
         let main_entry = compiler
@@ -71,7 +71,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
         let func_name = self.name.as_str();
         let func_type;
         match types.get(func_name) {
-            Some(typ) => func_type = typ,
+            Some(scheme) => func_type = scheme.type_name.clone(),
             None => {
                 return Err(BackendError {
                     message: "Function {func_name} not typed.",
@@ -82,7 +82,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
         // get argument and return types
         let mut arg_types: Vec<Type> = Vec::new();
         let return_type: Type;
-        match &func_type {
+        match *func_type {
             Type::FuncType(func) => {
                 let initial_input = *func.input.clone();
                 // Don't add argument if it has type None (to deal with empty args)
@@ -292,7 +292,7 @@ impl LLVMTypedCodegen for StmtAssign {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match &self.targets[0] {
             Expr::Name(exprname) => {
@@ -408,7 +408,7 @@ impl LLVMTypedCodegen for StmtWhile {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let curr_block = compiler.builder.get_insert_block().unwrap();
         let while_test = compiler
@@ -519,7 +519,7 @@ impl LLVMTypedCodegen for StmtIf {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let test = self.test.typed_codegen(compiler, types)?;
         let curr_block = compiler.builder.get_insert_block().unwrap();
@@ -570,7 +570,7 @@ impl LLVMTypedCodegen for StmtIf {
                 }
             }
         }
-        if (!ret_stmt_in_true) {
+        if !ret_stmt_in_true {
             let _ = compiler.builder.build_unconditional_branch(ifend);
         }
 
@@ -617,7 +617,7 @@ impl LLVMTypedCodegen for Expr {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match self {
             Expr::BinOp(binop) => binop.typed_codegen(compiler, types),
@@ -640,10 +640,10 @@ impl LLVMTypedCodegen for ExprList {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         Err(BackendError {
-            message: "List not implemented yet...",
+            message: "List not implemented yet.",
         })
     }
 }
@@ -652,7 +652,7 @@ impl LLVMTypedCodegen for ExprIfExp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "IfExp not implemented yet...",
@@ -664,7 +664,7 @@ impl LLVMTypedCodegen for ExprCompare {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let mut left = self.left.typed_codegen(compiler, types)?;
         let comparators = self
@@ -765,7 +765,7 @@ impl LLVMTypedCodegen for ExprUnaryOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let bool_type = compiler.context.bool_type();
         let true_as_u64 = u64::from(true);
@@ -858,7 +858,7 @@ impl LLVMTypedCodegen for ExprBoolOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let values = self
             .values
@@ -902,7 +902,7 @@ impl LLVMTypedCodegen for ExprCall {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let func_name = self
             .func
@@ -917,6 +917,7 @@ impl LLVMTypedCodegen for ExprCall {
                 .get_function("printf")
                 .expect("Could not find print function.");
         } else {
+            // TODO: Add check here to check for other builtin function names
             function = compiler
                 .module
                 .get_function(func_name)
@@ -924,7 +925,6 @@ impl LLVMTypedCodegen for ExprCall {
         }
 
         // validate function args
-        // TODO: Handle varargs
         let arg_count = function.count_params();
         if !func_name.eq("print") && arg_count != self.args.len() as u32 {
             return Err(BackendError {
@@ -995,7 +995,7 @@ impl LLVMTypedCodegen for ExprName {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
@@ -1031,7 +1031,7 @@ impl LLVMTypedCodegen for ExprConstant {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match &self.value {
             Constant::Float(num) => {
@@ -1085,7 +1085,7 @@ impl LLVMTypedCodegen for ExprBinOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &Compiler<'ctx>,
-        types: &HashMap<String, Type>,
+        types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         // TODO: Figure out what to do if I have like a result from a generic func and
         // I try to do some operations on it

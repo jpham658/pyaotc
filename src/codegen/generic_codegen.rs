@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum, IntType};
+use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
     ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
-    StmtIf, StmtWhile, UnaryOp,
+    StmtIf, StmtWhile,
 };
 
 use crate::astutils::GetReturnStmts;
@@ -47,7 +47,7 @@ impl LLVMGenericCodegen for Stmt {
             Stmt::Expr(StmtExpr { value, .. }) => value.generic_codegen(compiler),
             Stmt::Assign(assign) => assign.generic_codegen(compiler),
             Stmt::If(ifstmt) => ifstmt.generic_codegen(compiler),
-            Stmt::While(whilestmt) => whilestmt.generic_codegen(compiler), 
+            Stmt::While(whilestmt) => whilestmt.generic_codegen(compiler),
             Stmt::Return(return_stmt) => match &return_stmt.value {
                 None => {
                     let ret_none = compiler
@@ -227,7 +227,7 @@ impl LLVMGenericCodegen for StmtAssign {
                 if !func_args.contains_key(target_name) {
                     sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
                 }
-                
+
                 Ok(store.as_any_value_enum())
             }
             _ => Err(BackendError {
