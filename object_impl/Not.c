@@ -1,6 +1,4 @@
-#include <stdbool.h>
 #include "object.h"
-#include <assert.h>
 
 bool str_is_truthy(const char *str)
 {

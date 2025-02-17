@@ -1,76 +1,90 @@
 #include "object.h"
 
-char *strconcat(const char *str1, const char *str2)
+char *strmult(const char *str, int n)
 {
-    size_t new_str_len = strlen(str1) + strlen(str2) + 1;
-    char *new_str_ptr = (char *)malloc(new_str_len);
-    strcpy(new_str_ptr, str1);
-    strcat(new_str_ptr, str2);
-    return new_str_ptr;
+    if (n <= 0)
+    {
+        return "";
+    }
+
+    int len = strlen(str);
+    char *result = (char *)malloc(len * n + 1);
+    if (!result)
+    {
+        return NULL;
+    }
+
+    result[0] = '\0';
+    for (int i = 0; i < n; i++)
+    {
+        strcat(result, str);
+    }
+
+    return result;
 }
 
-Object *Add(Object *left, Object *right)
+Object *Mult(Object *left, Object *right)
 {
     if (object_is_int(left) && object_is_int(right))
     {
         int left_as_int = object_as_int(left);
         int right_as_int = object_as_int(right);
-        return new_int(left_as_int + right_as_int);
+        return new_int(left_as_int * right_as_int);
     }
     else if (object_is_float(left) && object_is_float(right))
     {
         double left_as_float = object_as_float(left);
         double right_as_float = object_as_float(right);
-        return new_float(left_as_float + right_as_float);
+        return new_float(left_as_float * right_as_float);
     }
     else if (object_is_bool(left) && object_is_bool(right))
     {
         int left_as_int = (int)object_as_bool(left);
         int right_as_int = (int)object_as_bool(right);
-        return new_int(left_as_int + right_as_int);
+        return new_int(left_as_int * right_as_int);
     }
     else if (object_is_float(left) && object_is_int(right))
     {
         double left_as_float = object_as_float(left);
         double right_as_float = (double)object_as_int(right);
-        return new_float(left_as_float + right_as_float);
+        return new_float(left_as_float * right_as_float);
     }
     else if (object_is_int(left) && object_is_float(right))
     {
         double left_as_float = (double)object_as_int(left);
         double right_as_float = object_as_float(right);
-        return new_float(left_as_float + right_as_float);
+        return new_float(left_as_float * right_as_float);
     }
     else if (object_is_bool(left) && object_is_int(right))
     {
         int left_as_int = (int)object_as_bool(left);
         int right_as_int = object_as_int(right);
-        return new_int(left_as_int + right_as_int);
+        return new_int(left_as_int * right_as_int);
     }
     else if (object_is_int(left) && object_is_bool(right))
     {
         int left_as_int = object_as_int(left);
         int right_as_int = (int)object_as_bool(right);
-        return new_int(left_as_int + right_as_int);
+        return new_int(left_as_int * right_as_int);
     }
     else if (object_is_bool(left) && object_is_float(right))
     {
         double left_as_float = (double)object_as_bool(left);
         double right_as_float = object_as_float(right);
-        return new_float(left_as_float + right_as_float);
+        return new_float(left_as_float * right_as_float);
     }
     else if (object_is_float(left) && object_is_bool(right))
     {
         double left_as_float = object_as_float(left);
         double right_as_float = (double)object_as_bool(right);
-        return new_float(left_as_float + right_as_float);
+        return new_float(left_as_float * right_as_float);
     }
-    else if (object_is_str(left) && object_is_str(right))
+    else if (object_is_str(left) && object_is_int(right))
     {
         const char *left_as_str = object_as_str(left);
-        const char *right_as_str = object_as_str(right);
-        return new_str(strconcat(left_as_str, right_as_str));
+        const char *right_as_int = object_as_int(right);
+        return new_str(strmult(left_as_str, right_as_int));
     }
-    fprintf(stderr, "Incompatible types for addition.\n");
+    fprintf(stderr, "Incompatible types for multiplication.\n");
     exit(EXIT_FAILURE);
 }

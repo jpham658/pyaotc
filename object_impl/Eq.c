@@ -1,5 +1,3 @@
-#include <stdbool.h>
-#include <assert.h>
 #include "object.h"
 
 bool Eq(Object *left, Object *right)
