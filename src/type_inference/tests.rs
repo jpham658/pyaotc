@@ -213,6 +213,7 @@ mod inferrer_tests {
     fn test_infer_function() {
         let mut type_inferrer = TypeInferrer::new();
         let mut env = TypeEnv::new();
+        let mut type_db = NodeTypeDB::new();
         let args = generate_func_args(&["x"]);
         let return_stmt = Expr::BinOp(ExprBinOp {
             range: DEFAULT_RANGE,
@@ -247,7 +248,7 @@ mod inferrer_tests {
         };
 
         let (subs, inferred_type) = type_inferrer
-            .infer_function(&mut env, &func_def)
+            .infer_function(&mut env, &func_def, &mut type_db)
             .expect("Funcdef shouldn't cause an error.");
 
         let expected_type = Type::FuncType(FuncTypeValue {
@@ -263,6 +264,7 @@ mod inferrer_tests {
     fn test_infer_function_with_no_args() {
         let mut type_inferrer = TypeInferrer::new();
         let mut env = TypeEnv::new();
+        let mut type_db = NodeTypeDB::new();
         let body = vec![Stmt::Return(StmtReturn {
             range: DEFAULT_RANGE,
             value: None,
@@ -282,7 +284,7 @@ mod inferrer_tests {
         };
 
         let (sub, inferred_type) = type_inferrer
-            .infer_function(&mut env, &func_def)
+            .infer_function(&mut env, &func_def, &mut type_db)
             .expect("Funcdef should not cause an error.");
 
         let expected_type = Type::FuncType(FuncTypeValue {
@@ -298,6 +300,7 @@ mod inferrer_tests {
     fn test_infer_function_with_multiple_args() {
         let mut type_inferrer = TypeInferrer::new();
         let mut env = TypeEnv::new();
+        let mut type_db = NodeTypeDB::new();
         let args = generate_func_args(&["x", "y"]);
         let binop_right = Expr::BinOp(ExprBinOp {
             range: DEFAULT_RANGE,
@@ -345,7 +348,7 @@ mod inferrer_tests {
         };
 
         let (sub, inferred_type) = type_inferrer
-            .infer_function(&mut env, &func_def)
+            .infer_function(&mut env, &func_def, &mut type_db)
             .expect("Funcdef shouldn't cause an error.");
         let expected_type = Type::FuncType(FuncTypeValue {
             input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
@@ -363,6 +366,7 @@ mod inferrer_tests {
     fn test_infer_function_with_no_return() {
         let mut type_inferrer = TypeInferrer::new();
         let mut env = TypeEnv::new();
+        let mut type_db = NodeTypeDB::new();
         let args = generate_func_args(&["x"]);
         let binop = Expr::BinOp(ExprBinOp {
             range: DEFAULT_RANGE,
@@ -397,7 +401,7 @@ mod inferrer_tests {
         };
 
         let (sub, inferred_type) = type_inferrer
-            .infer_function(&mut env, &func_def)
+            .infer_function(&mut env, &func_def, &mut type_db)
             .expect("Funcdef shouldn't cause an error.");
         let expected_type = Type::FuncType(FuncTypeValue {
             input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
@@ -412,6 +416,7 @@ mod inferrer_tests {
     fn test_infer_function_with_different_return_types() {
         let mut type_inferrer = TypeInferrer::new();
         let mut env = TypeEnv::new();
+        let mut type_db = NodeTypeDB::new();
         let factorial_fn = r#"
 def return_string_or_bool(x):
     if x == 0:
@@ -421,14 +426,14 @@ def return_string_or_bool(x):
         "#;
         let ast = Suite::parse(&factorial_fn, "<embedded>").unwrap();
         let (_, inferred_type) = type_inferrer
-            .infer_stmt(&mut env, &ast[0])
+            .infer_stmt(&mut env, &ast[0], &mut type_db)
             .expect("Funcdef shouldn't cause an error.");
-        
+
         let expected_type = Type::FuncType(FuncTypeValue {
             input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
             output: Box::new(Type::Any),
         });
-        
+
         assert_eq!(expected_type, inferred_type);
     }
 
@@ -436,6 +441,7 @@ def return_string_or_bool(x):
     fn test_infer_assignment() {
         let mut type_inferrer = TypeInferrer::new();
         let mut env = TypeEnv::new();
+        let mut type_db = NodeTypeDB::new();
         let assign = Stmt::Assign(StmtAssign {
             range: DEFAULT_RANGE,
             targets: vec![Expr::Name(ExprName {
@@ -451,7 +457,7 @@ def return_string_or_bool(x):
             type_comment: None,
         });
         let (_, inferred_type) = type_inferrer
-            .infer_stmt(&mut env, &assign)
+            .infer_stmt(&mut env, &assign, &mut type_db)
             .expect("Assignment should not cause an error.");
         let expected_type = Type::Scheme(Scheme {
             type_name: Box::new(Type::ConcreteType(ConcreteValue::Float)),
@@ -464,9 +470,9 @@ def return_string_or_bool(x):
     fn infer_range_call() {
         let mut type_inferrer = TypeInferrer::new();
         let mut env = TypeEnv::new();
-        let x_id = (TextSize::new(3), TextSize::new(4));
+        let mut type_db = NodeTypeDB::new();
         env.insert(
-            x_id,
+            "x".to_string(),
             Scheme {
                 type_name: Box::new(Type::TypeVar(TypeVar("v0".to_string()))),
                 bounded_vars: BTreeSet::new(),
@@ -497,7 +503,7 @@ def return_string_or_bool(x):
             type_comment: None,
         });
         let (sub, inferred_type) = type_inferrer
-            .infer_stmt(&mut env, &assign)
+            .infer_stmt(&mut env, &assign, &mut type_db)
             .expect("Inferrence should not fail.");
         let expected_type = Type::Scheme(Scheme {
             type_name: Box::new(Type::Sequence(Box::new(Type::ConcreteType(
