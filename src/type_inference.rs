@@ -7,7 +7,7 @@ use std::{
 use rustpython_parser::{
     ast::{
         located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, Ranged, Stmt, StmtExpr,
-        StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile, TextSize,
+        StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
     },
     text_size::TextRange,
 };

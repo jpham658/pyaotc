@@ -4,3 +4,4 @@ test.c
 *.ll
 test
 *.json
+/prereq_llvm

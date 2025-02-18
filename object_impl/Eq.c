@@ -4,8 +4,8 @@ bool Eq(Object *left, Object *right)
 {
     if (object_is_int(left) && object_is_int(right))
     {
-        int left_as_int = object_as_int(left);
-        int right_as_int = object_as_int(right);
+        word left_as_int = object_as_int(left);
+        word right_as_int = object_as_int(right);
         return left_as_int == right_as_int;
     }
     else if (object_is_float(left) && object_is_float(right))
@@ -35,12 +35,12 @@ bool Eq(Object *left, Object *right)
     else if (object_is_bool(left) && object_is_int(right))
     {
         bool left_as_bool = object_as_bool(left);
-        int right_as_int = object_as_int(right);
+        word right_as_int = object_as_int(right);
         return left_as_bool == right_as_int;
     }
     else if (object_is_int(left) && object_is_bool(right))
     {
-        int left_as_int = object_as_int(left);
+        word left_as_int = object_as_int(left);
         bool right_as_bool = object_as_bool(right);
         return left_as_int == right_as_bool;
     }

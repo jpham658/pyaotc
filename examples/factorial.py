@@ -1,11 +1,17 @@
 # Compiler:
-#   stderr:
-#       ...
-#       Invalid operand types for multiplication.
-#       ...
+#   status: success
 #
 # Run-time:
-#   stdout: 6\n6.000000\n\n
+#   status: error
+#   stdout: 
+#       ...
+#       6
+#       6.000000
+#   
+#   stderr:
+#       ...
+#       Incompatible types for subtraction.
+
 def factorial(x):
     if x == 0:
         return 1

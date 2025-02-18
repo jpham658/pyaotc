@@ -1,9 +1,10 @@
-use std::{fs, process::Command};
+use std::{fs, path::PathBuf, process::Command};
 
 use lang_tester::LangTester;
 
 fn main() {
     let tempdir = "outputs";
+    println!("executing tests");
     LangTester::new()
         .test_dir("examples")
         .test_path_filter(|p| p.extension().and_then(|x| x.to_str()) == Some("py"))
@@ -21,10 +22,18 @@ fn main() {
                 .join("\n")
         })
         .test_cmds(move |p| {
+            let test_file_path = p.to_str().expect("Path is not valid UTF-8");
+
+            println!("About to compile test file: {}", test_file_path);
+            
             let mut compiler = Command::new("cargo");
-            compiler.args(&["run", "--", p.to_str().unwrap()]);
-            let mut runtime = Command::new("lli");
-            runtime.args(&["output.ll"]);
+            compiler.args(&["run", "--", test_file_path]);
+            println!("Running compiler command: cargo run -- {}", test_file_path);
+            
+            // TODO: Gotta replace this with the name of the file...
+            let runtime = Command::new("./output");
+            println!("Running runtime command: ./output {}", test_file_path);
+
             vec![("Compiler", compiler), ("Run-time", runtime)]
         })
         .run();

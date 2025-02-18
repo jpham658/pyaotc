@@ -581,7 +581,19 @@ impl LLVMGenericCodegen for ExprCompare {
 impl LLVMGenericCodegen for ExprUnaryOp {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
         let g_uop_name = format!("{:?}", self.op);
-        let g_uop_fn = compiler.module.get_function(&g_uop_name).unwrap();
+        let g_uop_fn = match compiler.module.get_function(&g_uop_name) {
+            Some(func) => func,
+            None => {
+                let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+                let param = compiler
+                    .convert_any_type_to_param_type(obj_ptr_type.as_any_type_enum())
+                    .unwrap();
+                let g_op_fn_type = obj_ptr_type.fn_type(&[param], false);
+                compiler
+                    .module
+                    .add_function(&g_uop_name, g_op_fn_type, None)
+            }
+        };
 
         let operand_obj = self.operand.generic_codegen(compiler)?.into_pointer_value();
         let g_uop_res = compiler

@@ -11,10 +11,16 @@ char *strconcat(const char *str1, const char *str2)
 
 Object *Add(Object *left, Object *right)
 {
+    if (left == NULL || right == NULL)
+    {
+        fprintf(stderr, "Incompatible types for addition.\n");
+        exit(EXIT_FAILURE);
+    }
+
     if (object_is_int(left) && object_is_int(right))
     {
-        int left_as_int = object_as_int(left);
-        int right_as_int = object_as_int(right);
+        word left_as_int = object_as_int(left);
+        word right_as_int = object_as_int(right);
         return new_int(left_as_int + right_as_int);
     }
     else if (object_is_float(left) && object_is_float(right))
@@ -25,8 +31,8 @@ Object *Add(Object *left, Object *right)
     }
     else if (object_is_bool(left) && object_is_bool(right))
     {
-        int left_as_int = (int)object_as_bool(left);
-        int right_as_int = (int)object_as_bool(right);
+        word left_as_int = (word)object_as_bool(left);
+        word right_as_int = (word)object_as_bool(right);
         return new_int(left_as_int + right_as_int);
     }
     else if (object_is_float(left) && object_is_int(right))
@@ -43,14 +49,14 @@ Object *Add(Object *left, Object *right)
     }
     else if (object_is_bool(left) && object_is_int(right))
     {
-        int left_as_int = (int)object_as_bool(left);
-        int right_as_int = object_as_int(right);
+        word left_as_int = (word)object_as_bool(left);
+        word right_as_int = object_as_int(right);
         return new_int(left_as_int + right_as_int);
     }
     else if (object_is_int(left) && object_is_bool(right))
     {
-        int left_as_int = object_as_int(left);
-        int right_as_int = (int)object_as_bool(right);
+        word left_as_int = object_as_int(left);
+        word right_as_int = (word)object_as_bool(right);
         return new_int(left_as_int + right_as_int);
     }
     else if (object_is_bool(left) && object_is_float(right))
