@@ -5,10 +5,11 @@
 #       ...
 #
 # Run-time:
-#   stdout: 6\n6.000000
+#   stdout: 6\n6.000000\n\n
 def factorial(x):
     if x == 0:
         return 1
     return x * factorial(x-1)
 print(factorial(3))
 print(factorial(3.0))
+print(factorial("wrong string"))

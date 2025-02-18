@@ -9,12 +9,11 @@ mod type_inference;
 
 use compiler::Compiler;
 use inkwell::context::Context;
-use rule_typing::{get_inferred_rule_types, RuleEnv};
 use rustpython_parser::{
     ast::{self},
     Parse,
 };
-use std::{collections::HashMap, env, fs};
+use std::{env, fs};
 use type_inference::{infer_ast_types, NodeTypeDB, TypeEnv, TypeInferrer};
 
 
@@ -29,7 +28,6 @@ fn main() {
     let mut type_env = TypeEnv::new();
     let mut type_inferrer = TypeInferrer::new();
     let mut type_db = NodeTypeDB::new();
-    let mut rules_env: RuleEnv = HashMap::new();
 
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
@@ -42,7 +40,7 @@ fn main() {
             infer_ast_types(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
 
             println!("final type env: {:?}", type_env);
-            compiler.compile(&ast, &type_env);
+            compiler.compile(&ast, &type_env, "output");
             // compiler.compile_generically(&ast);
         }
         Err(e) => {

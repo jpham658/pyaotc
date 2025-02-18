@@ -2,28 +2,8 @@
  * File used to define LLVM used for generic Object class
  */
 
-#include <stdbool.h>;
-#include <stdint.h>;
-#include <string.h>;
-#include <stdarg.h>;
-#include <stdlib.h>;
-#include <stdio.h>;
-
-#define CHECK_PREDICATE(pred, msg)                                              \
-    do                                                                          \
-    {                                                                           \
-        if (!pred)                                                              \
-        {                                                                       \
-            fprintf(stderr, stderr, "[Error: %s:%d] %s\n", __FILE__, __LINE__); \
-            abort();                                                            \
-        }                                                                       \
-    } while (0)
-
-struct Object;
-typedef struct Object Object;
-
-typedef uintptr_t uword;
-typedef intptr_t word;
+#include "object.h"
+#include "gc/gc.h"
 
 bool object_is_int(Object *obj)
 {
@@ -33,17 +13,17 @@ bool object_is_int(Object *obj)
 word object_as_int(Object *obj)
 {
     CHECK_PREDICATE(object_is_int(obj), "Invalid int object.");
-    return (word)obj >> 1; 
+    return (word)obj >> 1;
 }
 
 Object *new_int(word val)
 {
-    return (Object *)(((uword)val << 1) | 0x1); 
+    return (Object *)(((uword)val << 1) | 0x1);
 }
 
 bool object_is_bool(Object *obj)
 {
-    return ((uword)obj & 0x3) == 0x0; 
+    return ((uword)obj & 0x3) == 0x0;
 }
 
 bool object_as_bool(Object *obj)
@@ -56,24 +36,6 @@ Object *new_bool(word val)
 {
     return (Object *)((uword)val << 3);
 }
-
-typedef enum
-{
-    Bool,
-    Int,
-    Str,
-    Float,
-} ObjectType;
-
-typedef struct
-{
-    ObjectType type;
-    union
-    {
-        const char *str_value;
-        double f_value;
-    };
-} HeapObject;
 
 bool object_is_heap_object(Object *obj)
 {
@@ -127,14 +89,14 @@ double object_as_float(Object *obj)
 
 Object *new_str(const char *value)
 {
-    HeapObject *result = (HeapObject *)malloc(sizeof *result);
+    HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
     *result = (HeapObject){.type = Str, .str_value = value};
     return object_from_address(result);
 }
 
 Object *new_float(double value)
 {
-    HeapObject *result = (HeapObject *)malloc(sizeof *result);
+    HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
     *result = (HeapObject){.type = Float, .f_value = value};
     return object_from_address(result);
 }

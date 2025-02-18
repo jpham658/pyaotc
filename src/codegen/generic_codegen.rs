@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use inkwell::types::{AnyTypeEnum, BasicMetadataTypeEnum};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
@@ -25,7 +25,24 @@ impl LLVMGenericCodegen for ExprBinOp {
         let left = self.left.generic_codegen(compiler)?;
         let right = self.right.generic_codegen(compiler)?;
         let g_op_fn_name = format!("{:?}", self.op);
-        let g_op_fn = compiler.module.get_function(&g_op_fn_name).unwrap();
+        let g_op_fn = match compiler.module.get_function(&g_op_fn_name) {
+            Some(func) => func,
+            None => {
+                let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+                let params: Vec<_> = [obj_ptr_type, obj_ptr_type]
+                    .into_iter()
+                    .map(|p| {
+                        compiler
+                            .convert_any_type_to_param_type(p.as_any_type_enum())
+                            .unwrap()
+                    })
+                    .collect();
+                let g_op_fn_type = obj_ptr_type.fn_type(&params, false);
+                compiler
+                    .module
+                    .add_function(&g_op_fn_name, g_op_fn_type, None)
+            }
+        };
         let g_op_call = compiler
             .builder
             .build_call(
@@ -512,11 +529,28 @@ impl LLVMGenericCodegen for ExprCompare {
                 });
             }
             let g_cmpop_fn_name = format!("{:?}", op);
-            let g_op_fn = compiler.module.get_function(&g_cmpop_fn_name).unwrap();
+            let g_cmpop_fn = match compiler.module.get_function(&g_cmpop_fn_name) {
+                Some(func) => func,
+                None => {
+                    let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+                    let params: Vec<_> = [obj_ptr_type, obj_ptr_type]
+                        .into_iter()
+                        .map(|p| {
+                            compiler
+                                .convert_any_type_to_param_type(p.as_any_type_enum())
+                                .unwrap()
+                        })
+                        .collect();
+                    let g_op_fn_type = compiler.context.bool_type().fn_type(&params, false);
+                    compiler
+                        .module
+                        .add_function(&g_cmpop_fn_name, g_op_fn_type, None)
+                }
+            };
             let llvm_comp = compiler
                 .builder
                 .build_call(
-                    g_op_fn,
+                    g_cmpop_fn,
                     &[
                         BasicMetadataValueEnum::PointerValue(left.into_pointer_value()),
                         BasicMetadataValueEnum::PointerValue(comp.into_pointer_value()),
