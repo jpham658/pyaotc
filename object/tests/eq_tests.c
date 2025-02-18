@@ -1,4 +1,4 @@
-#include "Eq.c"
+#include "../Eq.c"
 
 void test_int_int_eq()
 {

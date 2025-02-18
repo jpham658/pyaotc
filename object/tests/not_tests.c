@@ -1,4 +1,4 @@
-#include "Not.c"
+#include "../Not.c"
 
 void test_not_on_str()
 {
