@@ -1,18 +1,17 @@
 #include <assert.h>
 
 
-// int *range(int arr[], int start, int stop, int step)
-// {
-//     int idx = 0;
-//     for (int i = start; i <= stop; i = i + step)
-//     {
-//         // TODO: Add check in for invalid arr size given
-//         arr[idx] = i;
-//         idx += 1;
-//     }
+int *range(int arr[], int start, int stop, int step)
+{
+    int idx = 0;
+    for (int i = start; i <= stop; i = i + step)
+    {
+        arr[idx] = i;
+        idx += 1;
+    }
 
-//     return arr;
-// }
+    return arr;
+}
 
 int main()
 {
