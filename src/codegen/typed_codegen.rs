@@ -11,9 +11,11 @@ use rustpython_parser::ast::{
 use std::collections::HashMap;
 
 use crate::compiler::Compiler;
+use crate::compiler_utils::builder_utils::{
+    allocate_variable, handle_global_assignment, store_value,
+};
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
-use crate::compiler_utils::set_symtable_ptrs::set_variable_pointers_in_symbol_table;
 use crate::type_inference::{ConcreteValue, Scheme, Type, TypeEnv};
 
 use super::error::{BackendError, IRGenResult};
@@ -22,7 +24,7 @@ use super::generic_codegen::LLVMGenericCodegen;
 pub trait LLVMTypedCodegen {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir>;
 }
@@ -30,7 +32,7 @@ pub trait LLVMTypedCodegen {
 impl LLVMTypedCodegen for Stmt {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match self {
@@ -59,7 +61,7 @@ impl LLVMTypedCodegen for Stmt {
 impl LLVMTypedCodegen for StmtFunctionDef {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         // save main entry point
@@ -77,6 +79,10 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                     message: "Function {func_name} not typed.",
                 })
             }
+        }
+
+        {
+            let _ = compiler.sym_table.enter_scope();
         }
 
         // get argument and return types
@@ -141,28 +147,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             Type::ConcreteType(ConcreteValue::None) => {
                 compiler.context.void_type().fn_type(&llvm_arg_types, false)
             }
-            Type::Scheme(Scheme { type_name, .. }) => match **type_name {
-                Type::ConcreteType(ConcreteValue::Int) => {
-                    compiler.context.i64_type().fn_type(&llvm_arg_types, false)
-                }
-                Type::ConcreteType(ConcreteValue::Float) => {
-                    compiler.context.f64_type().fn_type(&llvm_arg_types, false)
-                }
-                Type::ConcreteType(ConcreteValue::Bool) => {
-                    compiler.context.bool_type().fn_type(&llvm_arg_types, false)
-                }
-                Type::ConcreteType(ConcreteValue::Str) => compiler
-                    .context
-                    .i8_type()
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&llvm_arg_types, false),
-                _ => {
-                    println!("{:?}", return_type);
-                    return Err(BackendError {
-                        message: "Not a valid function return type after visiting scheme.",
-                    });
-                }
-            },
+            // TODO: Extend to handle Any cases in the case of ambiguous return types
             _ => {
                 println!("{:?}", return_type);
                 return Err(BackendError {
@@ -200,9 +185,15 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 (k.clone(), v_ptr.as_any_value_enum())
             })
             .collect::<HashMap<_, _>>();
+
         {
             let mut func_args = compiler.func_args.borrow_mut();
-            func_args.extend(arg_map.clone());
+            for (arg_name, arg_val) in arg_map {
+                compiler
+                    .sym_table
+                    .add_variable(&arg_name, Some(arg_val), None);
+                func_args.push(arg_name);
+            }
         }
 
         let mut ret_stmt_declared = false;
@@ -235,26 +226,6 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                         .builder
                         .build_return(Some(&ir.into_pointer_value()));
                 }
-
-                Type::Scheme(Scheme { type_name, .. }) => match **type_name {
-                    Type::ConcreteType(ConcreteValue::Int)
-                    | Type::ConcreteType(ConcreteValue::Bool) => {
-                        let _ = compiler.builder.build_return(Some(&ir.into_int_value()));
-                    }
-                    Type::ConcreteType(ConcreteValue::Float) => {
-                        let _ = compiler.builder.build_return(Some(&ir.into_float_value()));
-                    }
-                    Type::ConcreteType(ConcreteValue::Str) => {
-                        let _ = compiler
-                            .builder
-                            .build_return(Some(&ir.into_pointer_value()));
-                    }
-                    _ => {
-                        return Err(BackendError {
-                            message: "Not a valid function return type after visiting scheme.",
-                        });
-                    }
-                },
                 _ => {
                     return Err(BackendError {
                         message: "Not a valid function return type.",
@@ -270,20 +241,13 @@ impl LLVMTypedCodegen for StmtFunctionDef {
         // reset back to normal!
         compiler.builder.position_at_end(main_entry);
         {
-            let mut func_args = compiler.func_args.borrow_mut();
-            func_args.clear();
+            let _ = compiler.sym_table.exit_scope();
+            compiler.func_args.borrow_mut().clear();
         }
 
         // // Build generic function body
-        let sym_table_as_any = compiler.sym_table_as_any.borrow().clone();
-        let original_sym_table = compiler.sym_table.borrow().clone();
-        {
-            set_variable_pointers_in_symbol_table(compiler, &sym_table_as_any);
-        }
         let _ = self.generic_codegen(compiler)?;
-        {
-            set_variable_pointers_in_symbol_table(compiler, &original_sym_table);
-        }
+
         Ok(func_def.as_any_value_enum())
     }
 }
@@ -291,123 +255,64 @@ impl LLVMTypedCodegen for StmtFunctionDef {
 impl LLVMTypedCodegen for StmtAssign {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
-        match &self.targets[0] {
-            Expr::Name(exprname) => {
-                let target_name = exprname.id.as_str();
-                let typed_value = &self
-                    .value
-                    .typed_codegen(compiler, types)
-                    .expect("Failed to compute right side of assignment with types.");
-
-                // Only compute generic value if we are altering a variable outside of a function scope
-                let func_args = compiler.func_args.borrow();
-                let generic_value_ptr = if !func_args.contains_key(target_name) {
-                    let generic_val = self
-                        .value
-                        .generic_codegen(compiler)
-                        .expect("Failed to compute right side of assignment generically.")
-                        .clone();
-                    Some(generic_val)
-                } else {
-                    None
-                };
-
-                let mut sym_table = compiler.sym_table.borrow_mut();
-                let mut sym_table_as_any = compiler.sym_table_as_any.borrow_mut();
-
-                let target_ptr;
-                if func_args.contains_key(target_name) {
-                    target_ptr = func_args.get(target_name).unwrap().into_pointer_value()
-                } else if sym_table.contains_key(target_name) {
-                    // should only be pointers in the symbol table
-                    target_ptr = sym_table.get(target_name).unwrap().into_pointer_value();
-                } else {
-                    match typed_value.get_type() {
-                        AnyTypeEnum::FloatType(..) => {
-                            target_ptr = compiler
-                                .builder
-                                .build_alloca(compiler.context.f64_type(), target_name)
-                                .expect("Cannot allocate variable {target_name}");
-                        }
-                        AnyTypeEnum::IntType(..) => {
-                            // Booleans get cast to integers, so distinguish between the two...
-                            let itype = typed_value.get_type().into_int_type();
-                            let alloc_type = if itype == compiler.context.bool_type() {
-                                compiler.context.bool_type()
-                            } else {
-                                compiler.context.i64_type()
-                            };
-                            target_ptr = compiler
-                                .builder
-                                .build_alloca(alloc_type, target_name)
-                                .expect("Cannot allocate variable {target_name}");
-                        }
-                        AnyTypeEnum::PointerType(ptr) => {
-                            // Pointers are usually i8 ? Might wanna double check this
-                            target_ptr = compiler
-                                .builder
-                                .build_alloca(
-                                    typed_value.into_pointer_value().get_type(),
-                                    target_name,
-                                )
-                                .expect("Cannot allocate variable {target_name}");
-                        }
-                        _ => {
-                            return Err(BackendError {
-                                message: "Assignments not implemented for {value.get_type()}",
-                            });
-                        }
-                    }
-                }
-                let store;
-
-                match typed_value.get_type() {
-                    AnyTypeEnum::IntType(..) => {
-                        store = compiler
-                            .builder
-                            .build_store(target_ptr, typed_value.into_int_value())
-                            .expect("Could not store variable {target_name}.");
-                    }
-                    AnyTypeEnum::FloatType(..) => {
-                        store = compiler
-                            .builder
-                            .build_store(target_ptr, typed_value.into_float_value())
-                            .expect("Could not store variable {target_name}.");
-                    }
-                    AnyTypeEnum::PointerType(..) => {
-                        store = compiler
-                            .builder
-                            .build_store(target_ptr, typed_value.into_pointer_value())
-                            .expect("Cannot allocate variable {target_name}");
-                    }
-                    _ => {
-                        return Err(BackendError {
-                            message: "Assignments not implemented for {value.get_type()}",
-                        })
-                    }
-                }
-
-                if let Some(ptr) = generic_value_ptr {
-                    sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
-                    sym_table_as_any.insert(target_name.to_string(), ptr.as_any_value_enum());
-                }
-
-                return Ok(store.as_any_value_enum());
+        // TODO: Figure out how to deal with subscripts
+        let target_name = match &self.targets[0] {
+            Expr::Name(exprname) => exprname.id.to_string(),
+            _ => {
+                return Err(BackendError {
+                    message: "Left of an assignment must be a variable",
+                })
             }
-            _ => Err(BackendError {
-                message: "Left of an assignment must be a variable.",
-            }),
+        };
+
+        let typed_value = self.value.typed_codegen(compiler, types)?;
+
+        let is_function_arg = {
+            let func_args = compiler.func_args.borrow();
+            func_args.contains(&target_name)
+        };
+
+        let generic_value_ptr = if !is_function_arg {
+            Some(self.value.generic_codegen(compiler)?)
+        } else {
+            None
+        };
+
+        let target_ptr = if compiler.sym_table.is_global_scope() {
+            handle_global_assignment(
+                compiler,
+                &target_name,
+                &Some(typed_value),
+                &generic_value_ptr,
+            )?;
+            let (g_ptr, _) = compiler
+                .sym_table
+                .resolve_variable(&target_name)
+                .expect("Target should be defined.");
+            g_ptr.expect("Global pointer should not be none when compiling with types.")
+        } else {
+            match compiler.sym_table.resolve_variable(&target_name) {
+                Some((ptr, _)) => ptr.expect(
+                    "Variable is defined in this scope but doesn't have a corresponding pointer...",
+                ),
+                _ => allocate_variable(compiler, &target_name, &typed_value)?,
+            }
         }
+        .into_pointer_value();
+
+        store_value(compiler, &target_ptr, &typed_value)?;
+
+        Ok(target_ptr.as_any_value_enum())
     }
 }
 
 impl LLVMTypedCodegen for StmtWhile {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let curr_block = compiler.builder.get_insert_block().unwrap();
@@ -518,7 +423,7 @@ impl LLVMTypedCodegen for StmtWhile {
 impl LLVMTypedCodegen for StmtIf {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let test = self.test.typed_codegen(compiler, types)?;
@@ -616,7 +521,7 @@ impl LLVMTypedCodegen for StmtIf {
 impl LLVMTypedCodegen for Expr {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match self {
@@ -639,7 +544,7 @@ impl LLVMTypedCodegen for Expr {
 impl LLVMTypedCodegen for ExprList {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         Err(BackendError {
@@ -651,7 +556,7 @@ impl LLVMTypedCodegen for ExprList {
 impl LLVMTypedCodegen for ExprIfExp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         Err(BackendError {
@@ -663,7 +568,7 @@ impl LLVMTypedCodegen for ExprIfExp {
 impl LLVMTypedCodegen for ExprCompare {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let mut left = self.left.typed_codegen(compiler, types)?;
@@ -764,7 +669,7 @@ impl LLVMTypedCodegen for ExprCompare {
 impl LLVMTypedCodegen for ExprUnaryOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let bool_type = compiler.context.bool_type();
@@ -857,7 +762,7 @@ impl LLVMTypedCodegen for ExprUnaryOp {
 impl LLVMTypedCodegen for ExprBoolOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let values = self
@@ -901,7 +806,7 @@ impl LLVMTypedCodegen for ExprBoolOp {
 impl LLVMTypedCodegen for ExprCall {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         let func_name = self
@@ -948,18 +853,7 @@ impl LLVMTypedCodegen for ExprCall {
         for i in 0..arg_count {
             let expected_type = fn_arg_types[i as usize].as_any_type_enum();
             if expected_type != args[i as usize].get_type() {
-                // Update sym table with generic versions of variables
-                let sym_table_as_any = compiler.sym_table_as_any.borrow().clone();
-                let original_sym_table = compiler.sym_table.borrow().clone();
-                let fn_call_res;
-                {
-                    set_variable_pointers_in_symbol_table(compiler, &sym_table_as_any);
-                }
-                fn_call_res = self.generic_codegen(compiler);
-                {
-                    set_variable_pointers_in_symbol_table(compiler, &original_sym_table);
-                }
-                return fn_call_res;
+                return self.generic_codegen(compiler);
             }
         }
 
@@ -994,31 +888,31 @@ impl LLVMTypedCodegen for ExprCall {
 impl LLVMTypedCodegen for ExprName {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
                 let name = self.id.as_str();
-                let func_args = compiler.func_args.borrow();
-                if let Some(arg_val) = func_args.get(name) {
-                    let load = compiler
-                        .builder
-                        .build_load(arg_val.into_pointer_value(), name)
-                        .expect("Could not load variable.");
-                    return Ok(load.as_any_value_enum());
+                let var_ptr = compiler.sym_table.resolve_variable(name);
+
+                match var_ptr {
+                    Some((ptr, _)) => {
+                        if ptr.is_none() {
+                            return Err(
+                                BackendError { message: "Variable is defined in this scope but doesn't have a corresponding pointer..." }
+                            );
+                        }
+                        let load = compiler
+                            .builder
+                            .build_load(ptr.unwrap().into_pointer_value(), name)
+                            .expect("Could not load variable.");
+                        Ok(load.as_any_value_enum())
+                    }
+                    _ => Err(BackendError {
+                        message: "Variable {name} is not defined.",
+                    }),
                 }
-                let sym_table = compiler.sym_table.borrow();
-                if let Some(name_ptr) = sym_table.get(name) {
-                    let load = compiler
-                        .builder
-                        .build_load(name_ptr.into_pointer_value(), name)
-                        .expect("Could not load variable.");
-                    return Ok(load.as_any_value_enum());
-                }
-                Err(BackendError {
-                    message: "Variable {name} is not defined.",
-                })
             }
             ExprContext::Del => Err(BackendError {
                 message: "Deleting a variable is not implemented yet.",
@@ -1030,7 +924,7 @@ impl LLVMTypedCodegen for ExprName {
 impl LLVMTypedCodegen for ExprConstant {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         match &self.value {
@@ -1084,7 +978,7 @@ impl LLVMTypedCodegen for ExprConstant {
 impl LLVMTypedCodegen for ExprBinOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
-        compiler: &Compiler<'ctx>,
+        compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
         // TODO: Figure out what to do if I have like a result from a generic func and
@@ -1244,7 +1138,7 @@ impl LLVMTypedCodegen for ExprBinOp {
 
 fn convert_test_to_bool<'ctx>(
     test: &AnyValueEnum<'ctx>,
-    compiler: &Compiler<'ctx>,
+    compiler: &mut Compiler<'ctx>,
 ) -> IntValue<'ctx> {
     match test.get_type() {
         AnyTypeEnum::IntType(i) => {
@@ -1302,7 +1196,7 @@ fn convert_test_to_bool<'ctx>(
 }
 
 fn get_left_and_right_as_floats<'ctx>(
-    compiler: &Compiler<'ctx>,
+    compiler: &mut Compiler<'ctx>,
     left: AnyValueEnum<'ctx>,
     right: AnyValueEnum<'ctx>,
 ) -> HashMap<AnyValueEnum<'ctx>, Option<FloatValue<'ctx>>> {

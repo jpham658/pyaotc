@@ -370,6 +370,11 @@ impl TypeInferrer {
         }
 
         let func_type = if arg_types.len() == 0 {
+            let return_type = match return_type {
+                Type::Scheme(Scheme { type_name, .. }) => *type_name,
+                _ => return_type,
+            };
+
             Type::FuncType(FuncTypeValue {
                 input: Box::new(Type::ConcreteType(ConcreteValue::None)),
                 output: Box::new(return_type),
@@ -379,10 +384,21 @@ impl TypeInferrer {
                 .into_iter()
                 .rev()
                 .fold(return_type.clone(), |typ, arg_type| {
-                    Type::FuncType(FuncTypeValue {
-                        input: Box::new(arg_type),
-                        output: Box::new(typ),
-                    })
+                    let typ = match typ {
+                        Type::Scheme(Scheme { type_name, .. }) => *type_name,
+                        _ => typ,
+                    };
+
+                    match arg_type {
+                        Type::Scheme(Scheme { type_name, .. }) => Type::FuncType(FuncTypeValue {
+                            input: type_name.clone(),
+                            output: Box::new(typ),
+                        }),
+                        _ => Type::FuncType(FuncTypeValue {
+                            input: Box::new(arg_type),
+                            output: Box::new(typ),
+                        }),
+                    }
                 })
         };
 
@@ -598,7 +614,7 @@ impl TypeInferrer {
                 let general_type = generalise(&rhs_type, &new_env);
                 env.insert(var.to_string(), general_type.clone());
 
-                Ok((rhs_sub, Type::Scheme(general_type)))
+                Ok((rhs_sub, rhs_type))
             }
             Stmt::FunctionDef(funcdef) => {
                 // Add function name to env in case it is tail recursive
@@ -630,19 +646,31 @@ impl TypeInferrer {
                 target,
                 ..
             }) => {
+                // TODO: Am I only doing for loops with names?
+                if !target.is_name_expr() {
+                    return Err(InferenceError {
+                        message: "Target in for loop must be a name.".to_string(),
+                    });
+                }
+
                 let (iter_sub, iter_type) = self.infer_expression(env, iter)?;
-                // TODO: So here, we need to infer the type of the iterator
-                // if it has a concrete element type, we can just infer the target type straight away
-                // otherwise, if it does exist, we take the iterator element type
-                // else we assign a typevar to target and make this the element type of iter
+                let target_name = target.as_name_expr().unwrap().id.as_str().to_string();
+                let mut new_env = env.clone();
+                new_env.insert(
+                    target_name,
+                    Scheme {
+                        type_name: Box::new(iter_type.clone()),
+                        bounded_vars: BTreeSet::new(),
+                    },
+                );
 
                 let mut inferred_body_and_or_else = body
                     .into_iter()
-                    .map(|stmt| self.infer_stmt(env, stmt, type_db))
+                    .map(|stmt| self.infer_stmt(&mut new_env, stmt, type_db))
                     .collect::<Vec<_>>();
                 let inferred_or_else = orelse
                     .into_iter()
-                    .map(|stmt| self.infer_stmt(env, stmt, type_db))
+                    .map(|stmt| self.infer_stmt(&mut new_env, stmt, type_db))
                     .collect::<Vec<_>>();
                 inferred_body_and_or_else.extend(inferred_or_else);
                 let composed_sub = inferred_body_and_or_else
@@ -651,7 +679,7 @@ impl TypeInferrer {
                         Ok((sub, _)) => sub,
                         Err(..) => Sub::new(),
                     })
-                    .fold(Sub::new(), |acc, sub| compose_subs(&acc, &sub));
+                    .fold(iter_sub, |acc, sub| compose_subs(&acc, &sub));
                 Ok((composed_sub, Type::ConcreteType(ConcreteValue::None)))
             }
             Stmt::While(StmtWhile {

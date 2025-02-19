@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
@@ -12,16 +12,19 @@ use rustpython_parser::ast::{
 
 use crate::astutils::GetReturnStmts;
 use crate::compiler::Compiler;
+use crate::compiler_utils::builder_utils::{
+    allocate_variable, handle_global_assignment, store_value,
+};
 use crate::compiler_utils::to_any_type::ToAnyType;
 
 use super::error::{BackendError, IRGenResult};
 
 pub trait LLVMGenericCodegen {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir>;
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir>;
 }
 
 impl LLVMGenericCodegen for ExprBinOp {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let left = self.left.generic_codegen(compiler)?;
         let right = self.right.generic_codegen(compiler)?;
         let g_op_fn_name = format!("{:?}", self.op);
@@ -59,7 +62,7 @@ impl LLVMGenericCodegen for ExprBinOp {
 }
 
 impl LLVMGenericCodegen for Stmt {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         match self {
             Stmt::Expr(StmtExpr { value, .. }) => value.generic_codegen(compiler),
             Stmt::Assign(assign) => assign.generic_codegen(compiler),
@@ -84,18 +87,21 @@ impl LLVMGenericCodegen for Stmt {
 }
 
 impl LLVMGenericCodegen for StmtFunctionDef {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        // All arguments are generic Any containers
-        // So generate code for function body as generic as possible
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let main_entry = compiler
             .builder
             .get_insert_block()
             .expect("Builder isn't mapped to a basic block?");
 
+        {
+            compiler.sym_table.enter_scope();
+        }
+
         let func_name = format!("{}_g", self.name.as_str());
         let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
         let void_type = compiler.context.void_type();
         let bool_type = compiler.context.bool_type();
+
         let any_args: Vec<BasicMetadataTypeEnum<'_>> = self
             .args
             .args
@@ -105,8 +111,7 @@ impl LLVMGenericCodegen for StmtFunctionDef {
             .collect();
 
         // Declare function with Any return type
-        // -- TODO: Return bool type if we know that the type will be bool (i.e. we have a compare)? --
-        let return_stmts = self.clone().get_return_stmts();
+        let return_stmts = self.clone().get_return_stmts(); // TODO: Remove this
         let func_type = if return_stmts.is_empty() {
             void_type.fn_type(&any_args, false)
         } else {
@@ -151,7 +156,12 @@ impl LLVMGenericCodegen for StmtFunctionDef {
 
         {
             let mut func_args = compiler.func_args.borrow_mut();
-            func_args.extend(arg_map.clone());
+            for (arg_name, arg_val) in arg_map {
+                compiler
+                    .sym_table
+                    .add_variable(&arg_name, None, Some(arg_val));
+                func_args.push(arg_name);
+            }
         }
 
         let mut ret_stmt_declared = false;
@@ -187,8 +197,8 @@ impl LLVMGenericCodegen for StmtFunctionDef {
 
         compiler.builder.position_at_end(main_entry);
         {
-            let mut func_args = compiler.func_args.borrow_mut();
-            func_args.clear();
+            compiler.func_args.borrow_mut().clear();
+            compiler.sym_table.exit_scope();
         }
 
         Ok(func_def.as_any_value_enum())
@@ -196,66 +206,43 @@ impl LLVMGenericCodegen for StmtFunctionDef {
 }
 
 impl LLVMGenericCodegen for StmtAssign {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
-        match &self.targets[0] {
-            Expr::Name(exprname) => {
-                let target_name = exprname.id.as_str();
-                let value = &self
-                    .value
-                    .generic_codegen(compiler)
-                    .expect("Failed to compute right side of assignment.");
-                let mut sym_table = compiler.sym_table.borrow_mut();
-                let func_args = compiler.func_args.borrow();
-                let target_ptr = if func_args.contains_key(target_name) {
-                    func_args.get(target_name).unwrap().into_pointer_value()
-                } else if sym_table.contains_key(target_name) {
-                    sym_table.get(target_name).unwrap().into_pointer_value()
-                } else {
-                    // All generic objects are represented as pointers Object*
-                    if value.is_int_value() {
-                        compiler
-                            .builder
-                            .build_alloca(compiler.context.bool_type(), "")
-                            .expect("Could not create pointer for bool type.")
-                    } else {
-                        compiler
-                            .builder
-                            .build_alloca(
-                                compiler.object_type.ptr_type(AddressSpace::default()),
-                                "",
-                            )
-                            .expect("Could not create pointer for Object type.")
-                    }
-                };
-
-                // Value will either definitely be a boolean, or Object*
-                let store = if value.is_int_value() {
-                    compiler
-                        .builder
-                        .build_store(target_ptr, value.into_int_value())
-                        .expect("Could not store bool value.")
-                } else {
-                    compiler
-                        .builder
-                        .build_store(target_ptr, value.into_pointer_value())
-                        .expect("Could not store Any value.")
-                };
-
-                if !func_args.contains_key(target_name) {
-                    sym_table.insert(target_name.to_string(), target_ptr.as_any_value_enum());
-                }
-
-                Ok(store.as_any_value_enum())
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
+        let target_name = match &self.targets[0] {
+            Expr::Name(exprname) => exprname.id.as_str(),
+            _ => {
+                return Err(BackendError {
+                    message: "Left of an assignment must be a variable.",
+                })
             }
-            _ => Err(BackendError {
-                message: "Left of an assignment must be a variable.",
-            }),
+        };
+
+        let value = self.value.generic_codegen(compiler)?;
+
+        let target_ptr = if compiler.sym_table.is_global_scope() {
+            handle_global_assignment(compiler, &target_name, &None, &Some(value))?;
+            let (_, g_obj_ptr) = compiler
+                .sym_table
+                .resolve_variable(&target_name)
+                .expect("Target should be defined.");
+            g_obj_ptr.expect("Global obj pointer should not be none when compiling without types.")
+        } else {
+            match compiler.sym_table.resolve_variable(&target_name) {
+                Some((ptr, _)) => ptr.expect(
+                    "Variable is defined in this scope but doesn't have a corresponding pointer...",
+                ),
+                _ => allocate_variable(compiler, &target_name, &value)?,
+            }
         }
+        .into_pointer_value();
+
+        store_value(compiler, &target_ptr, &value)?;
+
+        Ok(target_ptr.as_any_value_enum())
     }
 }
 
 impl LLVMGenericCodegen for StmtWhile {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let curr_block = compiler.builder.get_insert_block().unwrap();
         let while_test = compiler
             .context
@@ -366,7 +353,7 @@ impl LLVMGenericCodegen for StmtWhile {
 }
 
 impl LLVMGenericCodegen for StmtIf {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let test = self.test.generic_codegen(compiler)?;
 
         let main = compiler.builder.get_insert_block().unwrap();
@@ -467,7 +454,7 @@ impl LLVMGenericCodegen for StmtIf {
 }
 
 impl LLVMGenericCodegen for Expr {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         match self {
             Expr::BinOp(binop) => binop.generic_codegen(compiler),
             Expr::Constant(constant) => constant.generic_codegen(compiler),
@@ -486,7 +473,7 @@ impl LLVMGenericCodegen for Expr {
 }
 
 impl LLVMGenericCodegen for ExprList {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
         })
@@ -494,7 +481,7 @@ impl LLVMGenericCodegen for ExprList {
 }
 
 impl LLVMGenericCodegen for ExprIfExp {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         Err(BackendError {
             message: "Not implemented yet...",
         })
@@ -502,7 +489,7 @@ impl LLVMGenericCodegen for ExprIfExp {
 }
 
 impl LLVMGenericCodegen for ExprCompare {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let mut left = self.left.generic_codegen(compiler)?;
         let comparators = self
             .comparators
@@ -579,7 +566,7 @@ impl LLVMGenericCodegen for ExprCompare {
 }
 
 impl LLVMGenericCodegen for ExprUnaryOp {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let g_uop_name = format!("{:?}", self.op);
         let g_uop_fn = match compiler.module.get_function(&g_uop_name) {
             Some(func) => func,
@@ -605,7 +592,7 @@ impl LLVMGenericCodegen for ExprUnaryOp {
 }
 
 impl LLVMGenericCodegen for ExprBoolOp {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let values = self
             .values
             .clone()
@@ -645,7 +632,7 @@ impl LLVMGenericCodegen for ExprBoolOp {
 }
 
 impl LLVMGenericCodegen for ExprCall {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let func_name = self
             .func
             .as_name_expr()
@@ -718,33 +705,27 @@ impl LLVMGenericCodegen for ExprCall {
 }
 
 impl LLVMGenericCodegen for ExprName {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
                 let name = self.id.as_str();
-                let func_args = compiler.func_args.borrow();
-                if let Some(arg_ptr) = func_args.get(name) {
-                    let load = compiler
-                        .builder
-                        .build_load(arg_ptr.into_pointer_value(), "")
-                        .expect("Could not load Object pointer.");
-                    return Ok(load.as_any_value_enum());
+                let sym_table_entry = compiler.sym_table.resolve_variable(name);
+
+                match sym_table_entry {
+                    Some((_, ptr)) => {
+                        if ptr.is_none() {
+                            return Err(BackendError { message: "Variable is defined in this scope but doesn't have a corresponding pointer..." });
+                        }
+                        let load = compiler
+                            .builder
+                            .build_load(ptr.unwrap().into_pointer_value(), "")
+                            .expect("Could not load Object pointer.");
+                        return Ok(load.as_any_value_enum());
+                    }
+                    _ => Err(BackendError {
+                        message: "Variable {name} is not defined.",
+                    }),
                 }
-                let sym_table_as_any = compiler.sym_table_as_any.borrow();
-                if let Some(name_ptr) = sym_table_as_any.get(name) {
-                    return Ok(name_ptr.as_any_value_enum());
-                }
-                let sym_table = compiler.sym_table.borrow();
-                if let Some(name_ptr) = sym_table.get(name) {
-                    let load = compiler
-                        .builder
-                        .build_load(name_ptr.into_pointer_value(), "")
-                        .expect("Could not load Object pointer.");
-                    return Ok(load.as_any_value_enum());
-                }
-                Err(BackendError {
-                    message: "Variable {name} is not defined.",
-                })
             }
             ExprContext::Del => Err(BackendError {
                 message: "Deleting a variable is not implemented yet.",
@@ -754,7 +735,7 @@ impl LLVMGenericCodegen for ExprName {
 }
 
 impl LLVMGenericCodegen for ExprConstant {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &Compiler<'ctx>) -> IRGenResult<'ir> {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         match &self.value {
             Constant::Float(num) => Ok(num.to_any_type(compiler).as_any_value_enum()),
             Constant::Int(num) => {

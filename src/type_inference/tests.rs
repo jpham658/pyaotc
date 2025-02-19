@@ -459,10 +459,7 @@ def return_string_or_bool(x):
         let (_, inferred_type) = type_inferrer
             .infer_stmt(&mut env, &assign, &mut type_db)
             .expect("Assignment should not cause an error.");
-        let expected_type = Type::Scheme(Scheme {
-            type_name: Box::new(Type::ConcreteType(ConcreteValue::Float)),
-            bounded_vars: BTreeSet::new(),
-        });
+        let expected_type = Type::ConcreteType(ConcreteValue::Float);
         assert_eq!(expected_type, inferred_type);
     }
 
@@ -505,12 +502,7 @@ def return_string_or_bool(x):
         let (sub, inferred_type) = type_inferrer
             .infer_stmt(&mut env, &assign, &mut type_db)
             .expect("Inferrence should not fail.");
-        let expected_type = Type::Scheme(Scheme {
-            type_name: Box::new(Type::Sequence(Box::new(Type::ConcreteType(
-                ConcreteValue::Int,
-            )))),
-            bounded_vars: BTreeSet::new(),
-        });
+        let expected_type = Type::Sequence(Box::new(Type::ConcreteType(ConcreteValue::Int)));
         let expected_sub = Sub::from([("v0".to_string(), Type::ConcreteType(ConcreteValue::Int))]);
         assert_eq!(expected_sub, sub);
         assert_eq!(expected_type, inferred_type);

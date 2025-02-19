@@ -35,6 +35,7 @@
 #       str -> True 
 #       str -> 2.000000 
 #       True -> 2.000000 
+#       ...
 
 def hanoi(n, a: int, b: int, c: int):
     if n == 0:

@@ -1,5 +1,5 @@
 use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, StructType};
-use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
+use inkwell::values::{AnyValue, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use inkwell::{builder::Builder, context::Context, module::Module};
 use rustpython_parser::ast::Stmt;
@@ -10,6 +10,7 @@ use std::process::{exit, Command};
 
 use crate::codegen::error::{BackendError, IRGenResult};
 use crate::codegen::generic_codegen::LLVMGenericCodegen;
+use crate::codegen::scope::ScopeManager;
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
 use crate::type_inference::TypeEnv;
 
@@ -18,15 +19,15 @@ pub struct Compiler<'ctx> {
     pub context: &'ctx Context,
     pub builder: Builder<'ctx>,
     pub module: Module<'ctx>,
-    pub sym_table: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
-    pub sym_table_as_any: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
-    pub func_args: RefCell<HashMap<String, AnyValueEnum<'ctx>>>,
+    pub sym_table: ScopeManager<'ctx>,
+    pub generically_compile: bool,
+    pub func_args: RefCell<Vec<String>>,
     pub any_type: StructType<'ctx>,
     pub object_type: StructType<'ctx>,
 }
 
 impl<'ctx> Compiler<'ctx> {
-    pub fn new(context: &'ctx Context) -> Self {
+    pub fn new(context: &'ctx Context, generically_compile: bool) -> Self {
         let builder = context.create_builder();
         let module = context.create_module("pyaotc_mod");
 
@@ -37,15 +38,15 @@ impl<'ctx> Compiler<'ctx> {
             context,
             builder,
             module,
-            sym_table: RefCell::new(HashMap::new()),
-            sym_table_as_any: RefCell::new(HashMap::new()),
-            func_args: RefCell::new(HashMap::new()),
+            sym_table: ScopeManager::new(),
+            generically_compile,
+            func_args: RefCell::new(Vec::new()),
             any_type,
             object_type,
         }
     }
 
-    pub fn compile(&self, ast: &[Stmt], types: &TypeEnv, file_name: &str) {
+    pub fn compile(&mut self, ast: &[Stmt], types: &TypeEnv, file_name: &str) {
         let i32_type = self.context.i32_type();
         self.setup_compiler();
 
@@ -63,7 +64,7 @@ impl<'ctx> Compiler<'ctx> {
         let _ = self.builder.build_call(gc_init, &[], "gc_init_call");
 
         for statement in ast {
-            match statement.typed_codegen(&self, &types) {
+            match statement.typed_codegen(self, &types) {
                 Ok(_ir) => {}
                 Err(e) => {
                     println!("{:?}", e);
@@ -80,15 +81,15 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_return(Some(&i32_type.const_int(0, false)));
 
-        let output_file_name = format!("outputs/{file_name}.ll");
-        let output = Path::new(output_file_name.as_str());
+        let ll_file_path = format!("outputs/{file_name}.ll");
+        let output = Path::new(ll_file_path.as_str());
 
         match self.module.print_to_file(output) {
             Ok(..) => println!(".ll file found at {}", output.display()),
             Err(e) => println!("Could not generate .ll file: {}", e),
         }
 
-        match self.compile_to_binary(&output_file_name, "outputs/output", "output") {
+        match self.compile_to_binary(&file_name, &ll_file_path) {
             Ok(..) => {}
             Err(e) => panic!("CompileError: {}", e),
         }
@@ -97,7 +98,7 @@ impl<'ctx> Compiler<'ctx> {
     // Realistically, any program compiled without types is
     // is functionally equivalent to a program compiled with types -
     // it's just way slower, and way uglier
-    pub fn compile_generically(&self, ast: &[Stmt], file_name: &str) {
+    pub fn compile_generically(&mut self, ast: &[Stmt], file_name: &str) {
         let i32_type = self.context.i32_type();
         self.setup_compiler();
 
@@ -109,7 +110,7 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(main_entry);
 
         for statement in ast {
-            match statement.generic_codegen(&self) {
+            match statement.generic_codegen(self) {
                 Ok(_ir) => {}
                 Err(e) => {
                     println!("{:?}", e);
@@ -124,27 +125,22 @@ impl<'ctx> Compiler<'ctx> {
 
         // self.dump_module();
 
-        let output_file_name = format!("outputs/{file_name}.ll");
-        let output = Path::new("outputs/output.ll");
+        let ll_file_path = format!("outputs/{file_name}.ll");
+        let output = Path::new(&ll_file_path);
 
         match self.module.print_to_file(output) {
             Ok(..) => println!(".ll file found at {}", output.display()),
             Err(e) => println!("Could not generate .ll file: {}", e),
         }
 
-        match self.compile_to_binary(&output_file_name, "outputs/output", "output") {
+        match self.compile_to_binary(&file_name, &ll_file_path) {
             Ok(..) => {}
             Err(e) => panic!("CompileError: {}", e),
         }
     }
 
     // TODO: Refactor error handling to CompileError
-    fn compile_to_binary(
-        &self,
-        ll_file_path: &str,
-        obj_file_path: &str,
-        output_binary_path: &str,
-    ) -> Result<(), String> {
+    fn compile_to_binary(&self, file_name: &str, ll_file_path: &str) -> Result<(), String> {
         // link generated .ll file to generic LLVM code file
         let build_status = Command::new("./build_prereq_llvm.sh")
             .status()
@@ -158,8 +154,14 @@ impl<'ctx> Compiler<'ctx> {
         println!("Successfully ran build_prereq_llvm.sh");
 
         let prereq_llvm_file = "outputs/prereq_llvm.ll";
+        let linked_llvm_file = format!("outputs/{file_name}_final.ll");
         let link_status = Command::new("llvm-link")
-            .args([&prereq_llvm_file, &ll_file_path, "-o", "outputs/final.ll"])
+            .args([
+                &prereq_llvm_file,
+                &ll_file_path,
+                "-o",
+                &linked_llvm_file.as_str(),
+            ])
             .status()
             .expect("Failed to start llvm-link");
 
@@ -170,8 +172,9 @@ impl<'ctx> Compiler<'ctx> {
 
         println!("Successfully linked .ll files.");
 
+        let obj_file_path = format!("outputs/{file_name}");
         let llc_status = Command::new("llc")
-            .args(["-filetype=obj", "outputs/final.ll", "-o", obj_file_path])
+            .args(["-filetype=obj", &linked_llvm_file, "-o", &obj_file_path])
             .status()
             .map_err(|e| format!("Failed to execute llc: {}", e))?;
 
@@ -180,7 +183,7 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let gcc_status = Command::new("gcc")
-            .args([obj_file_path, "-lgc", "-o", output_binary_path, "-no-pie"])
+            .args([&obj_file_path, "-lgc", "-o", &file_name, "-no-pie"])
             .status()
             .map_err(|e| format!("Failed to execute gcc: {}", e))?;
 
@@ -190,7 +193,7 @@ impl<'ctx> Compiler<'ctx> {
 
         println!(
             "Successfully compiled to binary, try running your program with ./{}!",
-            output_binary_path
+            &file_name
         );
         Ok(())
     }
