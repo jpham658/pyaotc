@@ -5,7 +5,7 @@ OUTPUT_LL="outputs/prereq_llvm.ll"
 
 mkdir -p "$OUTPUT_DIR"
 
-mapfile -t C_FILES < <(find object -maxdepth 1 -name "*.c" -print)
+mapfile -t C_FILES < <(find object collections -maxdepth 1 -name "*.c" -print)
 
 echo "Found C files: ${C_FILES[*]}"
 

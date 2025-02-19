@@ -77,8 +77,10 @@ int main()
     test_range_iter();
 
     Range *r = create_range(2, 10, 2);
-    int value;
+    print_range(r);
+    printf("\n");
 
+    int value;
     if (range_get_item(r, 2, &value))
     {
         printf("Index 2: %d\n", value); // Output: 6 (2 + 2*2)

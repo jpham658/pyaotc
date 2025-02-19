@@ -69,3 +69,12 @@ Iterator *range_iter(Range *range)
     iter->next = range_next;
     return iter;
 }
+
+void print_range(Range *range)
+{
+    if (range == NULL)
+    {
+        printf("None");
+    }
+    printf("range(%d, %d, %d)", range->start, range->stop, range->step);
+}

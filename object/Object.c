@@ -75,6 +75,11 @@ bool object_is_float(Object *obj)
     return object_type(obj) == Float;
 }
 
+bool object_is_range(Object *obj)
+{
+    return object_type(obj) == RangeT;
+}
+
 const char *object_as_str(Object *obj)
 {
     CHECK_PREDICATE(object_is_str(obj), "Invalid string object.");
@@ -85,6 +90,12 @@ double object_as_float(Object *obj)
 {
     CHECK_PREDICATE(object_is_float(obj), "Invalid float object.");
     return object_address(obj)->f_value;
+}
+
+Range *object_as_range(Object *obj)
+{
+    CHECK_PREDICATE(object_is_range(obj), "Invalid range object.");
+    return object_address(obj)->range;
 }
 
 Object *new_str(const char *value)
@@ -98,6 +109,13 @@ Object *new_float(double value)
 {
     HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
     *result = (HeapObject){.type = Float, .f_value = value};
+    return object_from_address(result);
+}
+
+Object *new_range(Range *range)
+{
+    HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
+    *result = (HeapObject){.type = RangeT, .range = range};
     return object_from_address(result);
 }
 
@@ -157,6 +175,9 @@ void print_obj(int arg_num, Object *obj, ...)
             break;
         case Float:
             print_float(object_as_float(curr));
+            break;
+        case RangeT:
+            print_range(object_as_range(curr));
             break;
         default:
             print_str(object_as_str(curr));

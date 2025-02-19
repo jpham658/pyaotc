@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "../collections/range.h"
 
 #define CHECK_PREDICATE(pred, msg)                                              \
     do                                                                          \
@@ -41,6 +42,7 @@ typedef enum
     Int,
     Str,
     Float,
+    RangeT,
 } ObjectType;
 
 typedef struct
@@ -50,6 +52,7 @@ typedef struct
     {
         const char *str_value;
         double f_value;
+        Range *range;
     };
 } HeapObject;
 
@@ -72,6 +75,7 @@ extern Object *new_float(double value);
 extern void print_int(int i);
 extern void print_bool(bool b);
 extern void print_str(const char *str);
+extern void print_range(Range *range);
 extern void print_float(double d);
 extern void print_newline();
 extern void print_none();
