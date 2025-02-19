@@ -41,7 +41,6 @@ fn main() {
 
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
-            astutils::print_ast(&ast);
             // do one round of type inferrence first,
             // then while types in type_env are not bound,
             // swap between rule inferrence and normal type inferrence?
@@ -49,7 +48,6 @@ fn main() {
             // normal type inferrence
             infer_ast_types(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
 
-            println!("final type env: {:?}", type_env);
             compiler.compile(&ast, &type_env, file_name);
             // compiler.compile_generically(&ast);
         }

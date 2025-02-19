@@ -67,8 +67,8 @@ impl<'ctx> Compiler<'ctx> {
             match statement.typed_codegen(self, &types) {
                 Ok(_ir) => {}
                 Err(e) => {
-                    println!("{:?}", e);
-                    return;
+                    eprintln!("{:?}", e);
+                    exit(-1);
                 }
             }
         }

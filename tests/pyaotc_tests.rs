@@ -26,9 +26,11 @@ fn main() {
 
             let mut compiler = Command::new("cargo");
             compiler.args(&["run", "--", test_file_path]);
+            println!("Running compiler command: cargo run -- {}", test_file_path);
 
             let binary_cmd = format!("./{}", binary_name);
             let runtime = Command::new(binary_cmd);
+            println!("Running runtime command: ./{} {}", binary_name, test_file_path);
 
             vec![("Compiler", compiler), ("Run-time", runtime)]
         })
