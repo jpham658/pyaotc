@@ -5,7 +5,7 @@ size_t range_len(Range *range)
     return range->length;
 }
 
-Range *create_range(int start, int stop, int step)
+Range *create_range(word start, word stop, word step)
 {
     if (step == 0)
     {
@@ -24,14 +24,14 @@ Range *create_range(int start, int stop, int step)
     }
     else
     {
-        int diff = (step > 0) ? (stop - start) : (start - stop);
+        word diff = (step > 0) ? (stop - start) : (start - stop);
         range->length = (diff + abs(step) - 1) / abs(step);
     }
 
     return range;
 }
 
-int range_get_item(Range *range, int index, int *result)
+word range_get_item(Range *range, word index, word *result)
 {
     if (index < 0)
         index += range->length;
@@ -52,10 +52,10 @@ void *range_next(void *iter)
         return NULL;
     }
 
-    int value = range->start + it->current * range->step;
+    word value = range->start + it->current * range->step;
     it->current++;
 
-    word *result = (word *)GC_malloc(sizeof(int));
+    word *result = (word *)GC_malloc(sizeof(word));
     *result = value;
     return result;
 }
@@ -70,11 +70,11 @@ Iterator *range_iter(Range *range)
     return iter;
 }
 
-void print_range(Range *range)
+void printf_range(Range *range)
 {
     if (range == NULL)
     {
         printf("None");
     }
-    printf("range(%d, %d, %d)", range->start, range->stop, range->step);
+    printf("range(%ld, %ld, %ld)", range->start, range->stop, range->step);
 }

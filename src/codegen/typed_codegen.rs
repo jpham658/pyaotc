@@ -4,15 +4,16 @@ use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
-    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr,
+    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFor,
     StmtFunctionDef, StmtIf, StmtWhile, UnaryOp,
 };
 
 use std::collections::HashMap;
 
+use crate::astutils::{get_iter_type_name, is_iterable};
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, handle_global_assignment, store_value,
+    allocate_variable, build_range_call, handle_global_assignment, store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
@@ -40,6 +41,7 @@ impl LLVMTypedCodegen for Stmt {
             Stmt::Assign(assign) => assign.typed_codegen(compiler, types),
             Stmt::If(ifstmt) => ifstmt.typed_codegen(compiler, types),
             Stmt::While(whilestmt) => whilestmt.typed_codegen(compiler, types),
+            Stmt::For(forstmt) => forstmt.typed_codegen(compiler, types),
             Stmt::Return(return_stmt) => match &return_stmt.value {
                 None => {
                     let ret_none = compiler
@@ -306,6 +308,72 @@ impl LLVMTypedCodegen for StmtAssign {
         store_value(compiler, &target_ptr, &typed_value)?;
 
         Ok(target_ptr.as_any_value_enum())
+    }
+}
+
+impl LLVMTypedCodegen for StmtFor {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &mut Compiler<'ctx>,
+        types: &TypeEnv,
+    ) -> IRGenResult<'ir> {
+        if !is_iterable(&self.iter, types) {
+            return Err(BackendError {
+                message: "Cannot iterate over given iterator.",
+            });
+        }
+
+        let iter = self.iter.typed_codegen(compiler, types)?;
+        let iter_type = get_iter_type_name(&self.iter, types);
+
+        if iter_type.is_empty() {
+            return Err(BackendError {
+                message: "Iterator type not implemented yet.",
+            });
+        }
+
+        let iter_func_name = format!("{}_iter", iter_type);
+        let next_func_name = format!("{}_next", iter_type);
+
+        // TODO: Declare all iter functions in compiler setup, but can dynamically
+        // declare next
+        let iter_func = compiler.module.get_function(&iter_func_name).unwrap();
+
+        let next_func = match compiler.module.get_function(&next_func_name) {
+            Some(func) => func,
+            None => {
+                let iterator_ptr_type = compiler
+                    .module
+                    .get_struct_type("struct.Iterator")
+                    .expect("Iterator type hasn't been declared?")
+                    .ptr_type(AddressSpace::default());
+                let next_fn_type = compiler
+                    .context
+                    .void_type()
+                    .fn_type(&[iterator_ptr_type.into()], false);
+                let _ = compiler
+                    .module
+                    .add_function(&next_func_name, next_fn_type, None);
+                compiler.module.get_function(&next_func_name).unwrap()
+            }
+        };
+
+        let iter_as_param = compiler
+            .convert_any_value_to_param_value(iter)
+            .expect("Iterable could not be converted to a parameter.");
+
+        let iter_ptr = compiler
+            .builder
+            .build_call(iter_func, &[iter_as_param.into()], "iter")
+            .expect("Failed to call iterator function")
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        Err(BackendError {
+            message: "For stmt not implemented yet. ",
+        })
     }
 }
 
@@ -821,6 +889,13 @@ impl LLVMTypedCodegen for ExprCall {
                 .module
                 .get_function("printf")
                 .expect("Could not find print function.");
+        } else if func_name.eq("range") {
+            let args = self
+                .args
+                .iter()
+                .map(|arg| arg.typed_codegen(compiler, types))
+                .collect::<Result<Vec<_>, BackendError>>()?;
+            return build_range_call(compiler, args);
         } else {
             // TODO: Add check here to check for other builtin function names
             function = compiler
@@ -859,21 +934,7 @@ impl LLVMTypedCodegen for ExprCall {
 
         let args: Vec<BasicMetadataValueEnum<'_>> = args
             .into_iter()
-            .filter_map(|val| match val {
-                AnyValueEnum::IntValue(..) => {
-                    Some(BasicMetadataValueEnum::IntValue(val.into_int_value()))
-                }
-                AnyValueEnum::FloatValue(..) => {
-                    Some(BasicMetadataValueEnum::FloatValue(val.into_float_value()))
-                }
-                AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(
-                    val.into_pointer_value(),
-                )),
-                AnyValueEnum::StructValue(..) => {
-                    Some(BasicMetadataValueEnum::StructValue(val.into_struct_value()))
-                }
-                _ => None,
-            })
+            .filter_map(|val| compiler.convert_any_value_to_param_value(val))
             .collect();
 
         let call = compiler

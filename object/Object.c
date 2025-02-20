@@ -92,12 +92,6 @@ double object_as_float(Object *obj)
     return object_address(obj)->f_value;
 }
 
-Range *object_as_range(Object *obj)
-{
-    CHECK_PREDICATE(object_is_range(obj), "Invalid range object.");
-    return object_address(obj)->range;
-}
-
 Object *new_str(const char *value)
 {
     HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
@@ -175,9 +169,6 @@ void print_obj(int arg_num, Object *obj, ...)
             break;
         case Float:
             print_float(object_as_float(curr));
-            break;
-        case RangeT:
-            print_range(object_as_range(curr));
             break;
         default:
             print_str(object_as_str(curr));

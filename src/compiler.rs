@@ -1,5 +1,5 @@
 use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, StructType};
-use inkwell::values::{AnyValue, BasicMetadataValueEnum};
+use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use inkwell::{builder::Builder, context::Context, module::Module};
 use rustpython_parser::ast::Stmt;
@@ -33,6 +33,8 @@ impl<'ctx> Compiler<'ctx> {
 
         let any_type = context.opaque_struct_type("struct.HeapObject");
         let object_type = context.opaque_struct_type("struct.Object");
+        let iterator = context.opaque_struct_type("struct.Iterator");
+        let range = context.opaque_struct_type("struct.Range");
 
         Self {
             context,
@@ -212,6 +214,7 @@ impl<'ctx> Compiler<'ctx> {
         self.setup_obj_constructors();
         self.setup_print_fns();
         self.setup_gc_fns();
+        self.setup_iter_fns();
     }
 
     /**
@@ -243,10 +246,26 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    fn setup_iter_fns(&self) {
+        let iterator = self.module.get_struct_type("struct.Iterator").unwrap();
+        let range = self.context.get_struct_type("struct.Range").unwrap();
+
+        let iter_fns = Vec::from([("range", range.ptr_type(AddressSpace::default()))]);
+
+        for (fn_name_prefix, fn_param) in iter_fns {
+            let fn_type = iterator
+                .ptr_type(AddressSpace::default())
+                .fn_type(&[fn_param.into()], false);
+            let fn_name = format!("{fn_name_prefix}_iter");
+            let _ = self.module.add_function(&fn_name, fn_type, None);
+        }
+    }
+
     /**
      * Print utils
      */
     fn setup_print_fns(&self) {
+        let range = self.context.get_struct_type("struct.Range").unwrap();
         let print_fns = HashMap::from([
             ("print_int", self.context.i64_type().as_any_type_enum()),
             ("print_bool", self.context.bool_type().as_any_type_enum()),
@@ -257,6 +276,10 @@ impl<'ctx> Compiler<'ctx> {
                     .i8_type()
                     .ptr_type(AddressSpace::default())
                     .as_any_type_enum(),
+            ),
+            (
+                "print_range",
+                range.ptr_type(AddressSpace::default()).as_any_type_enum(),
             ),
             (
                 "print_obj",
@@ -291,6 +314,31 @@ impl<'ctx> Compiler<'ctx> {
                 self.context.void_type().fn_type(&params, is_var_args)
             };
             let _ = self.module.add_function(&fn_name, print_fn, None);
+        }
+    }
+
+    pub fn convert_any_value_to_param_value<'a>(
+        &self,
+        value: AnyValueEnum<'a>,
+    ) -> Option<BasicMetadataValueEnum<'a>> {
+        match value {
+            AnyValueEnum::IntValue(int_value) => Some(BasicMetadataValueEnum::IntValue(int_value)),
+            AnyValueEnum::FloatValue(float_value) => {
+                Some(BasicMetadataValueEnum::FloatValue(float_value))
+            }
+            AnyValueEnum::PointerValue(pointer_value) => {
+                Some(BasicMetadataValueEnum::PointerValue(pointer_value))
+            }
+            AnyValueEnum::StructValue(struct_value) => {
+                Some(BasicMetadataValueEnum::StructValue(struct_value))
+            }
+            AnyValueEnum::VectorValue(vector_value) => {
+                Some(BasicMetadataValueEnum::VectorValue(vector_value))
+            }
+            AnyValueEnum::ArrayValue(array_value) => {
+                Some(BasicMetadataValueEnum::ArrayValue(array_value))
+            }
+            _ => None,
         }
     }
 

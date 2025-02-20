@@ -5,13 +5,13 @@
 
 typedef struct
 {
-    int start, stop, step;
+    word start, stop, step;
     size_t length;
 } Range;
 
 extern size_t range_len(Range *range);
-extern Range *create_range(int start, int stop, int step);
+extern Range *create_range(word start, word stop, word step);
 extern void *range_next(void *iter);
-extern void print_range(Range *range);
+extern void prword_range(Range *range);
 
 #endif

@@ -17,7 +17,7 @@ mod get_inferred_rule_types {
             Heuristic::from([
                 (Type::ConcreteType(ConcreteValue::Str), 5.0),
                 (
-                    Type::Sequence(Box::new(Type::TypeVar(TypeVar("r0".to_string())))),
+                    Type::List(Box::new(Type::TypeVar(TypeVar("r0".to_string())))),
                     4.0,
                 ),
             ]),
@@ -42,7 +42,7 @@ mod get_inferred_rule_types {
             Heuristic::from([
                 (Type::ConcreteType(ConcreteValue::Str), 5.0),
                 (
-                    Type::Sequence(Box::new(Type::TypeVar(TypeVar("r0".to_string())))),
+                    Type::List(Box::new(Type::TypeVar(TypeVar("r0".to_string())))),
                     4.0,
                 ),
             ]),
@@ -99,7 +99,7 @@ mod get_most_likely_type_tests {
         let heuristic = Heuristic::from([
             (Type::ConcreteType(ConcreteValue::Str), 5.0),
             (
-                Type::Sequence(Box::new(Type::TypeVar(TypeVar("r0".to_string())))),
+                Type::List(Box::new(Type::TypeVar(TypeVar("r0".to_string())))),
                 3.0,
             ),
             (
@@ -119,7 +119,7 @@ mod get_most_likely_type_tests {
         let heuristic = Heuristic::from([
             (Type::ConcreteType(ConcreteValue::Str), 3.0),
             (
-                Type::Sequence(Box::new(Type::TypeVar(TypeVar("r0".to_string())))),
+                Type::List(Box::new(Type::TypeVar(TypeVar("r0".to_string())))),
                 3.0,
             ),
             (
@@ -154,7 +154,7 @@ mod infer_stmts_with_rules_tests {
     #[test]
     fn test_infer_stmts_with_index_and_assign_stmt() {
         let mut rule_env = RuleEnv::new();
-        let type_db = NodeTypeDB::from([
+        let mut type_db = NodeTypeDB::from([
             (
                 TextRange::new(TextSize::new(0), TextSize::new(2)),
                 Type::ConcreteType(ConcreteValue::Int),
@@ -190,10 +190,9 @@ mod infer_stmts_with_rules_tests {
             type_comment: None,
         };
 
-        infer_stmts_with_rules(&mut rule_env, &[Stmt::Assign(assignment)], &type_db);
+        let _ = infer_stmts_with_rules(&mut rule_env, &[Stmt::Assign(assignment)], &mut type_db);
         let expected_elt_type = Type::ConcreteType(ConcreteValue::Int);
-        let expected_heuristics =
-            Heuristic::from([(Type::Sequence(Box::new(expected_elt_type)), 3.0)]);
+        let expected_heuristics = Heuristic::from([(Type::List(Box::new(expected_elt_type)), 3.0)]);
         let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
         assert_eq!(expected_rule_env, rule_env);
     }
@@ -203,7 +202,7 @@ mod infer_stmts_with_rules_tests {
 mod infer_expr_with_rules_tests {
     use malachite_bigint::BigInt;
     use rustpython_parser::ast::{
-        Constant, ExprCall, ExprConstant, ExprName, ExprSubscript, Identifier,
+        Constant, ExprAttribute, ExprCall, ExprConstant, ExprName, ExprSubscript, Identifier,
     };
 
     use super::*;
@@ -214,16 +213,17 @@ mod infer_expr_with_rules_tests {
     #[test]
     fn test_infer_len_call() {
         let mut rule_env = RuleEnv::new();
+        let type_db = NodeTypeDB::new();
         let mut rule_inferrer = RuleInferrer::new();
         let call = ExprCall {
             range: DEFAULT_RANGE,
             func: Box::new(Expr::Name(ExprName {
-                range: DEFAULT_RANGE,
+                range: TextRange::new(TextSize::new(0), TextSize::new(2)),
                 id: Identifier::new("len"),
                 ctx: DEFAULT_EXPR_CTX,
             })),
             args: vec![Expr::Name(ExprName {
-                range: DEFAULT_RANGE,
+                range: TextRange::new(TextSize::new(0), TextSize::new(1)),
                 id: Identifier::new("x"),
                 ctx: DEFAULT_EXPR_CTX,
             })],
@@ -231,12 +231,13 @@ mod infer_expr_with_rules_tests {
         };
         let expr = Expr::Call(call);
 
-        infer_expr_with_rules(&mut rule_env, &expr, &mut rule_inferrer);
+        infer_expr_with_rules(&mut rule_env, &expr, &mut rule_inferrer, &type_db);
         let expected_type_var = Type::TypeVar(TypeVar("r0".to_string()));
         let expected_heuristics = Heuristic::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
-            (Type::Sequence(Box::new(expected_type_var.clone())), 2.0),
+            (Type::List(Box::new(expected_type_var.clone())), 2.0),
             (Type::Set(Box::new(expected_type_var.clone())), 2.0),
+            (Type::Range, 2.0),
         ]);
         let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
         assert_eq!(expected_rule_env, rule_env);
@@ -245,6 +246,7 @@ mod infer_expr_with_rules_tests {
     #[test]
     fn test_infer_subscript_with_integer_slice() {
         let mut rule_env = RuleEnv::new();
+        let type_db = NodeTypeDB::new();
         let mut rule_inferrer = RuleInferrer::new();
         let subscript = ExprSubscript {
             range: DEFAULT_RANGE,
@@ -262,12 +264,80 @@ mod infer_expr_with_rules_tests {
         };
         let expr = Expr::Subscript(subscript);
 
-        infer_expr_with_rules(&mut rule_env, &expr, &mut rule_inferrer);
+        infer_expr_with_rules(&mut rule_env, &expr, &mut rule_inferrer, &type_db);
         let expected_type_var = Type::TypeVar(TypeVar("r0".to_string()));
         let expected_heuristics = Heuristic::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
-            (Type::Sequence(Box::new(expected_type_var.clone())), 2.0),
+            (Type::List(Box::new(expected_type_var.clone())), 2.0),
+            (Type::Range, 2.0),
         ]);
+        let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
+        assert_eq!(expected_rule_env, rule_env);
+    }
+
+    #[test]
+    fn test_append_rule() {
+        let mut rule_env = RuleEnv::new();
+        let type_db = NodeTypeDB::from([(
+            TextRange::new(TextSize::new(0), TextSize::new(1)),
+            Type::ConcreteType(ConcreteValue::Str),
+        )]);
+        let mut rule_inferrer = RuleInferrer::new();
+        let call = ExprCall {
+            range: DEFAULT_RANGE,
+            func: Box::new(Expr::Attribute(ExprAttribute {
+                range: DEFAULT_RANGE,
+                value: Box::new(Expr::Name(ExprName {
+                    range: DEFAULT_RANGE,
+                    id: Identifier::new("x"),
+                    ctx: DEFAULT_EXPR_CTX,
+                })),
+                attr: Identifier::new("append".to_string()),
+                ctx: DEFAULT_EXPR_CTX,
+            })),
+            args: vec![Expr::Name(ExprName {
+                range: TextRange::new(TextSize::new(0), TextSize::new(1)),
+                id: Identifier::new("y"),
+                ctx: DEFAULT_EXPR_CTX,
+            })],
+            keywords: vec![],
+        };
+        let expr = Expr::Call(call);
+
+        infer_expr_with_rules(&mut rule_env, &expr, &mut rule_inferrer, &type_db);
+        let expected_type_var = Type::ConcreteType(ConcreteValue::Str);
+        let expected_heuristics =
+            Heuristic::from([(Type::List(Box::new(expected_type_var.clone())), 10.0)]);
+        let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
+        assert_eq!(expected_rule_env, rule_env);
+    }
+
+    #[test]
+    fn test_clear_rule() {
+        let mut rule_env = RuleEnv::new();
+        let type_db = NodeTypeDB::new();
+        let mut rule_inferrer = RuleInferrer::new();
+        let call = ExprCall {
+            range: DEFAULT_RANGE,
+            func: Box::new(Expr::Attribute(ExprAttribute {
+                range: DEFAULT_RANGE,
+                value: Box::new(Expr::Name(ExprName {
+                    range: DEFAULT_RANGE,
+                    id: Identifier::new("x"),
+                    ctx: DEFAULT_EXPR_CTX,
+                })),
+                attr: Identifier::new("clear".to_string()),
+                ctx: DEFAULT_EXPR_CTX,
+            })),
+            args: vec![],
+            keywords: vec![],
+        };
+        let expr = Expr::Call(call);
+
+        infer_expr_with_rules(&mut rule_env, &expr, &mut rule_inferrer, &type_db);
+        let expected_type_var = Type::TypeVar(TypeVar("r0".to_string()));
+        let expected_heuristics =
+            Heuristic::from([(Type::List(Box::new(expected_type_var.clone())), 10.0)]);
         let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
         assert_eq!(expected_rule_env, rule_env);
     }

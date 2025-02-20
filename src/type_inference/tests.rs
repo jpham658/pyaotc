@@ -25,6 +25,7 @@ mod inferrer_tests {
     #[test]
     fn test_infer_literal() {
         let mut env = TypeEnv::new();
+        let mut type_db = NodeTypeDB::new();
         let lit = ExprConstant {
             range: DEFAULT_RANGE,
             kind: None,
@@ -35,13 +36,14 @@ mod inferrer_tests {
         let expected_res = (Sub::new(), Type::ConcreteType(ConcreteValue::Bool));
         assert_eq!(
             Ok(expected_res),
-            type_inferrer.infer_expression(&mut env, &expr)
+            type_inferrer.infer_expression(&mut env, &expr, &mut type_db)
         );
     }
 
     #[test]
     fn test_infer_name() {
         let mut env = TypeEnv::new();
+        let mut type_db = NodeTypeDB::new();
         let mut type_inferrer = TypeInferrer::new();
         env.insert(
             "x".to_string(),
@@ -56,7 +58,7 @@ mod inferrer_tests {
             id: Identifier::new("x"),
         };
         let expr = Expr::Name(name);
-        let res = type_inferrer.infer_expression(&mut env, &expr);
+        let res = type_inferrer.infer_expression(&mut env, &expr, &mut type_db);
 
         match res {
             Ok(typ) => {
@@ -78,6 +80,7 @@ mod inferrer_tests {
     #[test]
     fn test_infer_call() {
         let mut type_inferrer = TypeInferrer::new();
+        let mut type_db = NodeTypeDB::new();
         let mut env = TypeEnv::new();
         env.insert(
             "add".to_string(),
@@ -105,7 +108,7 @@ mod inferrer_tests {
         };
 
         let (subs, inferred_type) = type_inferrer
-            .infer_call(&mut env, &call)
+            .infer_call(&mut env, &call, &mut type_db)
             .expect("Call should be valid.");
 
         assert!(subs.len() != 0);
@@ -115,6 +118,7 @@ mod inferrer_tests {
     #[test]
     fn test_infer_call_with_more_than_one_argument() {
         let mut type_inferencer = TypeInferrer::new();
+        let mut type_db = NodeTypeDB::new();
         let mut env = TypeEnv::new();
         let add_funcdef = Type::FuncType(FuncTypeValue {
             input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
@@ -155,7 +159,7 @@ mod inferrer_tests {
         };
 
         let (subs, inferred_type) = type_inferencer
-            .infer_call(&mut env, &call)
+            .infer_call(&mut env, &call, &mut type_db)
             .expect("Call should be valid.");
 
         assert!(subs.len() != 0);
@@ -165,6 +169,7 @@ mod inferrer_tests {
     #[test]
     fn test_infer_call_type_error() {
         let mut type_inferencer = TypeInferrer::new();
+        let mut type_db = NodeTypeDB::new();
         let mut env = TypeEnv::new();
         let add_funcdef = Type::FuncType(FuncTypeValue {
             input: Box::new(Type::ConcreteType(ConcreteValue::Int)),
@@ -204,7 +209,7 @@ mod inferrer_tests {
             keywords: vec![],
         };
 
-        let result = type_inferencer.infer_call(&mut env, &call);
+        let result = type_inferencer.infer_call(&mut env, &call, &mut type_db);
 
         assert!(result.is_err());
     }
@@ -502,7 +507,7 @@ def return_string_or_bool(x):
         let (sub, inferred_type) = type_inferrer
             .infer_stmt(&mut env, &assign, &mut type_db)
             .expect("Inferrence should not fail.");
-        let expected_type = Type::Sequence(Box::new(Type::ConcreteType(ConcreteValue::Int)));
+        let expected_type = Type::Range;
         let expected_sub = Sub::from([("v0".to_string(), Type::ConcreteType(ConcreteValue::Int))]);
         assert_eq!(expected_sub, sub);
         assert_eq!(expected_type, inferred_type);

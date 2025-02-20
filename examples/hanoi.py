@@ -37,7 +37,7 @@
 #       True -> 2.000000 
 #       ...
 
-def hanoi(n, a: int, b: int, c: int):
+def hanoi(n, a: "int", b: "int", c: "int"):
     if n == 0:
         return
     hanoi(n-1, a, c, b)

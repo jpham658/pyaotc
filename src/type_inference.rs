@@ -66,7 +66,8 @@ pub enum Type {
     FuncType(FuncTypeValue),
     Scheme(Scheme),
     Undefined,
-    Sequence(Box<Type>),
+    Range,
+    List(Box<Type>),
     Set(Box<Type>),
     Mapping(Box<Type>, Box<Type>),
 }
@@ -131,6 +132,8 @@ pub fn infer_ast_types(
                                     bounded_vars: BTreeSet::new(),
                                 },
                             );
+                        } else {
+                            type_db.insert(lhs_val.range(), typ);
                         }
                     }
                     // if not a named expr, deal with in rule typing.
@@ -161,25 +164,13 @@ type TypeInferenceRes = Result<(Sub, Type), InferenceError>;
 
 pub struct TypeInferrer {
     fresh_var_generator: FreshVariableGenerator,
-    typename_to_type: HashMap<String, Type>,
     ret_types: Vec<Vec<Type>>, // stack to keep track of return types in function
 }
 
 impl TypeInferrer {
     pub fn new() -> Self {
-        let typename_to_type = HashMap::from([
-            ("bool".to_string(), Type::ConcreteType(ConcreteValue::Bool)),
-            ("int".to_string(), Type::ConcreteType(ConcreteValue::Int)),
-            (
-                "float".to_string(),
-                Type::ConcreteType(ConcreteValue::Float),
-            ),
-            ("str".to_string(), Type::ConcreteType(ConcreteValue::Str)),
-            ("None".to_string(), Type::ConcreteType(ConcreteValue::None)),
-        ]);
         Self {
             fresh_var_generator: FreshVariableGenerator::new("v"),
-            typename_to_type,
             ret_types: Vec::new(),
         }
     }
@@ -206,9 +197,41 @@ impl TypeInferrer {
     /**
      * Helper to infer the type of a function call node.
      */
-    pub fn infer_call(&mut self, env: &TypeEnv, call: &ExprCall) -> TypeInferenceRes {
+    pub fn infer_call(
+        &mut self,
+        env: &TypeEnv,
+        call: &ExprCall,
+        type_db: &mut NodeTypeDB,
+    ) -> TypeInferenceRes {
         let func = &*call.func;
-        // func_name will always be a name expr
+
+        // test if call is an attribute
+        if func.is_attribute_expr() {
+            let func_attr = func.as_attribute_expr().unwrap();
+            let attr = &func_attr.value;
+            if !attr.is_name_expr() {
+                return Err(InferenceError {
+                    message: "Invalid function call.".to_string(),
+                });
+            }
+
+            // TODO: Figure out how to map different calls e.g list.pop() to their types..
+            let mut sub = Sub::new();
+            for arg in &call.args {
+                let env = apply_to_type_env(&sub, env);
+                let (arg_sub, arg_type) = self.infer_expression(&env, arg, type_db)?;
+                type_db.insert(arg.range(), arg_type);
+                sub = compose_subs(&arg_sub, &sub);
+            }
+            return Ok((sub, Type::Range));
+        }
+
+        if !func.is_name_expr() {
+            return Err(InferenceError {
+                message: "Invalid function call.".to_string(),
+            });
+        }
+
         let func_name = func.as_name_expr().unwrap().id.as_str();
         if func_name.eq("print") {
             return Ok((Sub::new(), Type::ConcreteType(ConcreteValue::None)));
@@ -223,17 +246,17 @@ impl TypeInferrer {
             let mut sub = Sub::new();
             for arg in &call.args {
                 let env = apply_to_type_env(&sub, env);
-                let (arg_sub, arg_type) = self.infer_expression(&env, arg)?;
+                let (arg_sub, arg_type) = self.infer_expression(&env, arg, type_db)?;
                 let unifier = match unify(&arg_type, &int_type) {
                     Ok(sub) => sub,
                     Err(..) => Sub::new(),
                 };
                 sub = compose_subs(&arg_sub, &unifier);
             }
-            return Ok((sub, Type::Sequence(Box::new(int_type))));
+            return Ok((sub, Type::Range));
         }
 
-        let (sub1, type1) = self.infer_expression(env, func)?;
+        let (sub1, type1) = self.infer_expression(env, func, type_db)?;
 
         // func_name is always gonna have a scheme returned
         let scheme_type1;
@@ -256,7 +279,7 @@ impl TypeInferrer {
 
         for arg in &call.args {
             let mut new_env = apply_to_type_env(&composite_subs, env);
-            let (sub_arg, arg_type) = self.infer_expression(&mut new_env, arg)?;
+            let (sub_arg, arg_type) = self.infer_expression(&mut new_env, arg, type_db)?;
             composite_subs = compose_subs(&composite_subs, &sub_arg);
             arg_types.push(arg_type);
         }
@@ -300,7 +323,7 @@ impl TypeInferrer {
             .iter()
             .map(|arg| match &arg.as_arg().annotation {
                 None => Type::TypeVar(TypeVar(self.fresh_var_generator.next())),
-                Some(expr) => verify_type_ann(&expr, &self.typename_to_type).unwrap().1, // get type
+                Some(expr) => verify_type_ann(&expr).unwrap().1, // get type
             })
             .collect::<Vec<_>>();
 
@@ -328,7 +351,7 @@ impl TypeInferrer {
         apply_to_type_db(&subs, type_db);
 
         // infer with rules too
-        if let Err(e) = infer_stmts_with_rules(&mut rule_env, &func.body, &type_db) {
+        if let Err(e) = infer_stmts_with_rules(&mut rule_env, &func.body, type_db) {
             eprintln!("RuleInferrenceError: {}", e.message);
             return Err(InferenceError { message: e.message });
         }
@@ -344,7 +367,7 @@ impl TypeInferrer {
         let return_type: Type;
 
         if let Some(typexpr) = &func.returns {
-            return_type = verify_type_ann(&typexpr, &self.typename_to_type)?.1;
+            return_type = verify_type_ann(&typexpr)?.1;
         } else {
             let ret_types: Vec<_> = self
                 .ret_types
@@ -409,12 +432,18 @@ impl TypeInferrer {
     /**
      * Infer type of a given expression in a type environment.
      */
-    pub fn infer_expression(&mut self, env: &TypeEnv, expr: &Expr) -> TypeInferenceRes {
+    pub fn infer_expression(
+        &mut self,
+        env: &TypeEnv,
+        expr: &Expr,
+        type_db: &mut NodeTypeDB,
+    ) -> TypeInferenceRes {
         match expr {
             Expr::BinOp(binop) => {
-                let (sub_left, left_type) = self.infer_expression(env, &binop.left)?;
+                let (sub_left, left_type) = self.infer_expression(env, &binop.left, type_db)?;
                 let new_env = apply_to_type_env(&sub_left, env);
-                let (sub_right, right_type) = self.infer_expression(&new_env, &binop.right)?;
+                let (sub_right, right_type) =
+                    self.infer_expression(&new_env, &binop.right, type_db)?;
                 let mut composite_subs = compose_subs(&sub_left, &sub_right);
                 let resultant_type = match (left_type, right_type) {
                     (Type::Scheme(Scheme { type_name, .. }), typ)
@@ -471,18 +500,18 @@ impl TypeInferrer {
                     }),
                 }
             }
-            Expr::Call(call) => self.infer_call(env, call),
+            Expr::Call(call) => self.infer_call(env, call, type_db),
             Expr::BoolOp(bop) => {
                 // TODO: consider types of bop -> although might be a bit more difficult considering
                 // there aren't really predictable patterns apart from operands are truthy/falsy
                 Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Bool)))
             }
             Expr::Compare(cmp) => {
-                let (left_sub, left_type) = self.infer_expression(env, &*cmp.left)?;
+                let (left_sub, left_type) = self.infer_expression(env, &*cmp.left, type_db)?;
                 let mut composed_sub = left_sub;
                 for comparator in &cmp.comparators {
                     let (comparator_sub, comparator_type) =
-                        self.infer_expression(env, comparator)?;
+                        self.infer_expression(env, comparator, type_db)?;
 
                     let unified_sub = match left_type.clone() {
                         Type::Scheme(scheme) => unify(&scheme.type_name, &comparator_type)?,
@@ -501,40 +530,44 @@ impl TypeInferrer {
                     }
                     UnaryOp::Not => Type::ConcreteType(ConcreteValue::Bool),
                 };
-                let (sub, typ) = self.infer_expression(env, &uop.operand)?;
+                let (sub, typ) = self.infer_expression(env, &uop.operand, type_db)?;
                 let unifier = unify(&typ, &inferred_type)?;
                 let composed_sub = compose_subs(&sub, &unifier);
                 Ok((composed_sub, inferred_type))
             }
-            Expr::Subscript(subscript) => match self.infer_expression(env, &subscript.value) {
-                Ok((sub, typ)) => match typ {
-                    Type::Sequence(elt_typ) => Ok((sub, *elt_typ.clone())),
-                    Type::Mapping(_, val_typ) => Ok((sub, *val_typ.clone())),
-                    Type::ConcreteType(ConcreteValue::Str) => {
-                        Ok((sub, Type::ConcreteType(ConcreteValue::Str)))
-                    }
-                    _ => {
-                        // Assign a fresh var to the subscript, this will unify with the context it's used in
-                        let fresh_var = self.fresh_var_generator.next();
-                        Ok((
-                            sub,
-                            Type::Scheme(Scheme {
-                                type_name: Box::new(Type::TypeVar(TypeVar(fresh_var))),
-                                bounded_vars: BTreeSet::new(),
-                            }),
-                        ))
-                    }
-                },
-                Err(e) => Err(e),
-            },
+            Expr::Subscript(subscript) => {
+                match self.infer_expression(env, &subscript.value, type_db) {
+                    Ok((sub, typ)) => match typ {
+                        Type::List(elt_typ) => Ok((sub, *elt_typ.clone())),
+                        Type::Range => Ok((sub, Type::ConcreteType(ConcreteValue::Int))),
+                        Type::Mapping(_, val_typ) => Ok((sub, *val_typ.clone())),
+                        Type::ConcreteType(ConcreteValue::Str) => {
+                            Ok((sub, Type::ConcreteType(ConcreteValue::Str)))
+                        }
+                        _ => {
+                            // Assign a fresh var to the subscript, this will unify with the context it's used in
+                            let fresh_var = self.fresh_var_generator.next();
+                            Ok((
+                                sub,
+                                Type::Scheme(Scheme {
+                                    type_name: Box::new(Type::TypeVar(TypeVar(fresh_var))),
+                                    bounded_vars: BTreeSet::new(),
+                                }),
+                            ))
+                        }
+                    },
+                    Err(e) => Err(e),
+                }
+            }
             Expr::List(list) => {
                 if list.elts.is_empty() {
                     let typevar = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
                     return Ok((Sub::new(), typevar));
                 }
-                let (mut elt_sub, elt_type) = self.infer_expression(env, &list.elts[0])?;
+                let (mut elt_sub, elt_type) = self.infer_expression(env, &list.elts[0], type_db)?;
                 for idx in 1..list.elts.len() {
-                    let (idx_sub, idx_type) = self.infer_expression(env, &list.elts[idx])?;
+                    let (idx_sub, idx_type) =
+                        self.infer_expression(env, &list.elts[idx], type_db)?;
                     if idx_type != elt_type {
                         return Err(InferenceError {
                             message: "Cannot have list with elements of differing types."
@@ -543,16 +576,17 @@ impl TypeInferrer {
                     }
                     elt_sub = compose_subs(&elt_sub, &idx_sub);
                 }
-                Ok((elt_sub, Type::Sequence(Box::new(elt_type))))
+                Ok((elt_sub, Type::List(Box::new(elt_type))))
             }
             Expr::Set(set) => {
                 if set.elts.is_empty() {
                     let typevar = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
                     return Ok((Sub::new(), typevar));
                 }
-                let (mut elt_sub, elt_type) = self.infer_expression(env, &set.elts[0])?;
+                let (mut elt_sub, elt_type) = self.infer_expression(env, &set.elts[0], type_db)?;
                 for idx in 1..set.elts.len() {
-                    let (idx_sub, idx_type) = self.infer_expression(env, &set.elts[idx])?;
+                    let (idx_sub, idx_type) =
+                        self.infer_expression(env, &set.elts[idx], type_db)?;
                     if idx_type != elt_type {
                         return Err(InferenceError {
                             message: "Cannot have list with elements of differing types."
@@ -579,8 +613,34 @@ impl TypeInferrer {
         type_db: &mut NodeTypeDB,
     ) -> TypeInferenceRes {
         match stmt {
+            Stmt::AnnAssign(annassign) => {
+                let rhs = annassign
+                    .value
+                    .clone()
+                    .expect("RHS of assignment is missing.");
+                let (mut rhs_sub, rhs_type) = self.infer_expression(env, &rhs, type_db)?;
+                let (_, var_type) = verify_type_ann(&annassign.annotation)?;
+                match unify(&rhs_type, &var_type) {
+                    Ok(sub) => {
+                        rhs_sub = compose_subs(&rhs_sub, &sub);
+                    }
+                    Err(..) => {
+                        return Err(InferenceError {
+                            message: "RHS of assignment does not match type annotation."
+                                .to_string(),
+                        });
+                    }
+                }
+                if let Some(id) = annassign.target.as_name_expr() {
+                    env.insert(id.id.as_str().to_string(), generalise(&var_type, env));
+                } else {
+                    type_db.insert(annassign.target.range(), var_type.clone());
+                }
+
+                Ok((rhs_sub, var_type))
+            }
             Stmt::Assign(assign) => {
-                let (rhs_sub, rhs_type) = self.infer_expression(env, &assign.value)?;
+                let (rhs_sub, rhs_type) = self.infer_expression(env, &assign.value, type_db)?;
                 let mut new_env = env.clone();
                 let var;
                 let target = &assign.targets[0];
@@ -591,18 +651,14 @@ impl TypeInferrer {
                     }
                     Expr::Subscript(subscript) => {
                         let slice = *subscript.slice.clone();
-                        let (slice_sub, slice_type) = self.infer_expression(env, &slice)?;
-                        let mut subscript_sub = compose_subs(&slice_sub, &rhs_sub);
-                        let mut subscript_type = Type::ConcreteType(ConcreteValue::None);
+                        let (slice_sub, slice_type) =
+                            self.infer_expression(env, &slice, type_db)?;
+                        let subscript_sub = compose_subs(&slice_sub, &rhs_sub);
 
-                        if subscript.value.is_name_expr() {
-                            // add info about aggregate type to type db
-                            type_db.insert(slice.range(), slice_type);
-                            type_db.insert(subscript.range(), rhs_type.clone());
-                            return Ok((subscript_sub, rhs_type)); // TODO: Figure out how to do this better...
-                        }
+                        type_db.insert(slice.range(), slice_type);
+                        type_db.insert(subscript.range(), rhs_type.clone());
 
-                        return Ok((subscript_sub, subscript_type));
+                        return Ok((subscript_sub, rhs_type));
                     }
                     _ => {
                         let err_msg = format!(
@@ -653,7 +709,7 @@ impl TypeInferrer {
                     });
                 }
 
-                let (iter_sub, iter_type) = self.infer_expression(env, iter)?;
+                let (iter_sub, iter_type) = self.infer_expression(env, iter, type_db)?;
                 let target_name = target.as_name_expr().unwrap().id.as_str().to_string();
                 let mut new_env = env.clone();
                 new_env.insert(
@@ -688,7 +744,7 @@ impl TypeInferrer {
             | Stmt::If(StmtIf {
                 test, body, orelse, ..
             }) => {
-                let (inferred_test_sub, _) = self.infer_expression(env, test)?;
+                let (inferred_test_sub, _) = self.infer_expression(env, test, type_db)?;
                 let mut new_env = apply_to_type_env(&inferred_test_sub, env);
                 let mut inferred_body_and_or_else = body
                     .into_iter()
@@ -708,10 +764,10 @@ impl TypeInferrer {
                     .fold(inferred_test_sub, |acc, sub| compose_subs(&acc, &sub));
                 Ok((composed_sub, Type::ConcreteType(ConcreteValue::None)))
             }
-            Stmt::Expr(StmtExpr { value, .. }) => self.infer_expression(env, &**value),
+            Stmt::Expr(StmtExpr { value, .. }) => self.infer_expression(env, &**value, type_db),
             Stmt::Return(StmtReturn { value, .. }) => match value {
                 Some(expr) => {
-                    let inferred_type = self.infer_expression(env, expr);
+                    let inferred_type = self.infer_expression(env, expr, type_db);
                     if let Ok((_, typ)) = &inferred_type {
                         if self.ret_types.is_empty() {
                             panic!("Cannot have a return statement outside of a function.")
@@ -750,26 +806,12 @@ pub fn apply_to_type_db(sub: &Sub, type_db: &mut NodeTypeDB) {
 }
 
 /**
- * Helper to verify a type annotation
+ * Helper to verify a string type annotation
  */
-pub fn verify_type_ann(
-    typexpr: &Expr,
-    typename_to_type: &HashMap<String, Type>,
-) -> TypeInferenceRes {
+pub fn verify_type_ann(typexpr: &Expr) -> TypeInferenceRes {
     let typ = match &typexpr {
-        Expr::Name(ExprName { id, .. }) => {
-            let typename = id.as_str();
-            match typename_to_type.get(typename) {
-                Some(typ) => typ.clone(),
-                None => {
-                    return Err(InferenceError {
-                        message: "Invalid type annotation.".to_string(),
-                    })
-                }
-            }
-        }
         Expr::Constant(ExprConstant { value, .. }) => match value {
-            Constant::None => typename_to_type.get("None").unwrap().clone(),
+            Constant::Str(str) => parse_str_type_ann(str),
             _ => {
                 return Err(InferenceError {
                     message: "Invalid type annotation.".to_string(),
@@ -784,6 +826,44 @@ pub fn verify_type_ann(
     };
 
     Ok((Sub::new(), typ))
+}
+
+pub fn parse_str_type_ann(annotation: &str) -> Type {
+    let annotation = annotation.trim();
+    if annotation == "int" {
+        Type::ConcreteType(ConcreteValue::Int)
+    } else if annotation == "str" {
+        Type::ConcreteType(ConcreteValue::Str)
+    } else if annotation == "float" {
+        Type::ConcreteType(ConcreteValue::Float)
+    } else if annotation == "bool" {
+        Type::ConcreteType(ConcreteValue::Bool)
+    } else if annotation == "None" {
+        Type::ConcreteType(ConcreteValue::None)
+    } else if annotation.starts_with("list[") && annotation.ends_with("]") {
+        // parse list annotation
+        let inner = &annotation[5..annotation.len() - 1];
+        Type::List(Box::new(parse_str_type_ann(inner)))
+    } else if annotation.starts_with("set[") && annotation.ends_with("]") {
+        // parse set annotation
+        let inner = &annotation[5..annotation.len() - 1];
+        Type::Set(Box::new(parse_str_type_ann(inner)))
+    } else if annotation.starts_with("dict[") && annotation.ends_with("]") {
+        // parse dict annotation
+        let inner = &annotation[5..annotation.len() - 1];
+        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+
+        if parts.len() != 2 {
+            panic!("Invalid dict annotation: {}", annotation);
+        }
+
+        let key_type = parse_str_type_ann(parts[0]);
+        let value_type = parse_str_type_ann(parts[1]);
+
+        Type::Mapping(Box::new(key_type), Box::new(value_type))
+    } else {
+        panic!("Invalid type annotation: {}", annotation);
+    }
 }
 
 /**
@@ -842,9 +922,9 @@ pub fn apply(sub: &Sub, typ: &Type) -> Type {
                 output: Box::new(subbed_output),
             })
         }
-        Type::Sequence(elt_type) => {
+        Type::List(elt_type) => {
             let subbed_elt_type = apply(sub, elt_type);
-            Type::Sequence(Box::new(subbed_elt_type))
+            Type::List(Box::new(subbed_elt_type))
         }
         _ => type_clone,
     }
@@ -1020,7 +1100,7 @@ pub fn unify(t1: &Type, t2: &Type) -> Result<Sub, InferenceError> {
             }
             Ok(Sub::new())
         }
-        (Type::Sequence(typ1), Type::Sequence(typ2)) => unify(&typ1, &typ2),
+        (Type::List(typ1), Type::List(typ2)) => unify(&typ1, &typ2),
         _ => {
             let err_msg = format!("Types {:?} and {:?} do not unify.", t1, t2);
             Err(InferenceError { message: err_msg })

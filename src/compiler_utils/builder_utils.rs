@@ -1,13 +1,110 @@
 use inkwell::{
-    types::{AnyTypeEnum, BasicType},
-    values::{AnyValue, AnyValueEnum, PointerValue},
+    types::{AnyType, AnyTypeEnum, BasicType},
+    values::{AnyValue, AnyValueEnum, FunctionValue, PointerValue},
     AddressSpace,
 };
+use rustpython_parser::ast::{Expr, ExprCall, Stmt};
 
 use crate::{
     codegen::error::{BackendError, IRGenResult},
     compiler::Compiler,
 };
+
+/**
+ * Helper to build a range call
+ */
+pub fn build_range_call<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    args: Vec<AnyValueEnum<'ctx>>,
+) -> IRGenResult<'ctx> {
+    if args.len() == 0 {
+        return Err(BackendError {
+            message: "Too few arguments given to range call.",
+        });
+    }
+
+    if args.len() > 3 {
+        return Err(BackendError {
+            message: "Too many arguments given to range call.",
+        });
+    }
+
+    for arg in &args {
+        if !arg.is_int_value() {
+            return Err(BackendError {
+                message: "Arguments to range are incorrect.",
+            });
+        }
+    }
+
+    let start = if args.len() > 1 {
+        args[0].into_int_value()
+    } else {
+        compiler.context.i64_type().const_int(0, false)
+    };
+    let stop = if args.len() > 1 {
+        args[1].into_int_value()
+    } else {
+        args[0].into_int_value()
+    };
+    let step = if args.len() == 3 {
+        args[2].into_int_value()
+    } else {
+        compiler.context.i64_type().const_int(1, false)
+    };
+
+    let range_fn = match compiler.module.get_function("create_range") {
+        Some(func) => func,
+        None => {
+            let range_ptr_type = compiler
+                .module
+                .get_struct_type("struct.Range")
+                .expect("Range is not declared...")
+                .ptr_type(AddressSpace::default());
+            let i64_type = compiler.context.i64_type();
+            let arg_types = Vec::from([
+                compiler
+                    .convert_any_type_to_param_type(i64_type.as_any_type_enum())
+                    .unwrap(),
+                compiler
+                    .convert_any_type_to_param_type(i64_type.as_any_type_enum())
+                    .unwrap(),
+                compiler
+                    .convert_any_type_to_param_type(i64_type.as_any_type_enum())
+                    .unwrap(),
+            ]);
+            let range_fn_type = range_ptr_type.fn_type(&arg_types, false);
+            let _ = compiler
+                .module
+                .add_function("create_range", range_fn_type, None);
+            compiler.module.get_function("create_range").unwrap()
+        }
+    };
+
+    match compiler
+        .builder
+        .build_call(range_fn, &[start.into(), stop.into(), step.into()], "")
+    {
+        Ok(ir) => Ok(ir.as_any_value_enum()),
+        Err(..) => Err(BackendError {
+            message: "Could not build call.",
+        }),
+    }
+}
+
+/**
+ * Helper to build for loop body.
+ */
+pub fn build_for_loop_body<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    iter_ptr: PointerValue<'ctx>,
+    next_func: FunctionValue<'ctx>,
+    target: &Expr,
+    body: &[Stmt],
+) {
+    // get current from iterator
+    // store that at the variable represented by target
+}
 
 fn initialise_global_variable<'ctx>(
     compiler: &mut Compiler<'ctx>,

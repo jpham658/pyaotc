@@ -75,7 +75,6 @@ extern Object *new_float(double value);
 extern void print_int(int i);
 extern void print_bool(bool b);
 extern void print_str(const char *str);
-extern void print_range(Range *range);
 extern void print_float(double d);
 extern void print_newline();
 extern void print_none();

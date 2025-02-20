@@ -7,6 +7,7 @@ mod compiler_utils;
 mod rule_typing;
 mod type_inference;
 
+use astutils::print_ast;
 use compiler::Compiler;
 use inkwell::context::Context;
 use rustpython_parser::{
@@ -18,11 +19,7 @@ use type_inference::{infer_ast_types, NodeTypeDB, TypeEnv, TypeInferrer};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let python_source_path = if args.len() > 1 {
-        &args[1]
-    } else {
-        "examples/globals.py"
-    };
+    let python_source_path = if args.len() > 1 { &args[1] } else { "test.py" };
     let python_source = fs::read_to_string(python_source_path)
         .expect(format!("Could not read file {}", &python_source_path).as_str());
     let file_name = {
@@ -45,9 +42,11 @@ fn main() {
             // then while types in type_env are not bound,
             // swap between rule inferrence and normal type inferrence?
 
+            print_ast(&ast);
             // normal type inferrence
             infer_ast_types(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
 
+            println!("type env: {:?}", type_env);
             compiler.compile(&ast, &type_env, file_name);
             // compiler.compile_generically(&ast);
         }

@@ -25,20 +25,20 @@ type Rule = Vec<(Type, f32)>;
  * the type we expect (either a fresh typevar or another type),
  * and the current rules environment containing the list of heuristics
  * associated with a given variable name.
- * 
+ *
  * This will be used on a funcdef body...
  */
 pub fn infer_stmts_with_rules(
     rules_env: &mut RuleEnv,
     body: &[Stmt],
-    type_db: &NodeTypeDB,
+    type_db: &mut NodeTypeDB,
 ) -> RuleInferrenceRes {
     let mut rule_inferrer = RuleInferrer::new();
     for stmt in body {
         match stmt {
             Stmt::FunctionDef(funcdef) => {
                 if let Err(e) = infer_stmts_with_rules(rules_env, &funcdef.body, type_db) {
-                    return Err(e)
+                    return Err(e);
                 }
             }
             Stmt::Assign(StmtAssign { targets, .. }) => {
@@ -63,19 +63,23 @@ pub fn infer_stmts_with_rules(
                         match slice_type {
                             Type::Scheme(Scheme { type_name, .. }) => {
                                 if let Type::ConcreteType(ConcreteValue::Int) = **type_name {
-                                    rule_inferrer.apply_index_assign_rule(&target_id, rhs_typ, rules_env)
+                                    rule_inferrer
+                                        .apply_index_assign_rule(&target_id, rhs_typ, rules_env)
                                 } else {
-                                    rule_inferrer.apply_key_rule(&target_id, slice_type, rhs_typ, rules_env)   
+                                    rule_inferrer
+                                        .apply_key_rule(&target_id, slice_type, rhs_typ, rules_env)
                                 }
                             }
-                            Type::ConcreteType(ConcreteValue::Int) => rule_inferrer.apply_index_assign_rule(&target_id, rhs_typ, rules_env),
-                            _ => rule_inferrer.apply_key_rule(&target_id, slice_type, rhs_typ, rules_env)
+                            Type::ConcreteType(ConcreteValue::Int) => rule_inferrer
+                                .apply_index_assign_rule(&target_id, rhs_typ, rules_env),
+                            _ => rule_inferrer
+                                .apply_key_rule(&target_id, slice_type, rhs_typ, rules_env),
                         }
                     }
                 }
             }
             Stmt::Expr(StmtExpr { value, .. }) => {
-                infer_expr_with_rules(rules_env, value, &mut rule_inferrer);
+                infer_expr_with_rules(rules_env, value, &mut rule_inferrer, type_db);
             }
             _ => {}
         }
@@ -83,10 +87,48 @@ pub fn infer_stmts_with_rules(
     Ok(())
 }
 
-fn infer_expr_with_rules(rules_env: &mut RuleEnv, expr: &Expr, rule_inferrer: &mut RuleInferrer) {
+fn infer_expr_with_rules(
+    rules_env: &mut RuleEnv,
+    expr: &Expr,
+    rule_inferrer: &mut RuleInferrer,
+    type_db: &NodeTypeDB,
+) {
     match expr {
         Expr::Call(call) => {
             // check name of called fn
+            if !call.func.is_attribute_expr() && !call.func.is_name_expr() {
+                return;
+            }
+
+            if let Some(attr) = call.func.as_attribute_expr() {
+                if !attr.value.is_name_expr() {
+                    return;
+                }
+
+                let value = attr.value.as_name_expr().unwrap();
+                let attr_name = attr.attr.as_str();
+
+                if attr_name.eq("append") {
+                    let arg_type = type_db
+                        .get(&call.args[0].range())
+                        .expect("Node not defined in type db...");
+                    rule_inferrer.apply_list_operation_rule(
+                        &value.id.as_str(),
+                        arg_type,
+                        rules_env,
+                    );
+                } else if attr_name.eq("clear") || attr_name.eq("copy") {
+                    let typevar = rule_inferrer.get_new_typevar();
+                    rule_inferrer.apply_list_operation_rule(
+                        &value.id.as_str(),
+                        &typevar,
+                        rules_env,
+                    );
+                }
+
+                return;
+            }
+
             let func_name = call.func.as_name_expr().unwrap().id.as_str();
             let typevar = rule_inferrer.get_new_typevar();
             if func_name.eq("len") && call.args.len() == 1 {
@@ -100,9 +142,6 @@ fn infer_expr_with_rules(rules_env: &mut RuleEnv, expr: &Expr, rule_inferrer: &m
                         );
                     }
                 }
-            } else if func_name.eq("range") && call.args.len() <= 3 {
-                // TODO: Shouldn't range call be in normal inferrence?
-                // - special case where we know all arguments have to be ints.
             }
         }
         Expr::Subscript(subscript) => {
@@ -151,7 +190,8 @@ fn type_order(typ: &Type) -> i32 {
     match typ {
         Type::Mapping(..) => 1,
         Type::ConcreteType(ConcreteValue::Str) => 2,
-        Type::Sequence(..) => 3,
+        Type::List(..) => 3,
+        Type::Range => 4,
         _ => 0,
     }
 }
@@ -173,15 +213,31 @@ impl RuleInferrer {
     }
 
     /**
-     * Apply the index rule to the given variable.
+     * Apply the list operation rule to the given variable.
+     * This rule states that when we detect a call in the form
+     * x.m(a), where m is a list operation, x is definitely a list.
+     */
+    pub fn apply_list_operation_rule(
+        &mut self,
+        node_id: &str,
+        typ: &Type,
+        rules_env: &mut RuleEnv,
+    ) {
+        let rule = Vec::from([(Type::List(Box::new(typ.clone())), 10.0)]);
+        self.apply_rule(node_id, &rule, rules_env);
+    }
+
+    /**
+     * Apply the len rule to the given variable.
      * This rule states that when we call len on a variable,
      * this means that it is either a string, a sequence, or a set.
      */
     pub fn apply_len_rule(&mut self, node_id: &str, typ: &Type, rules_env: &mut RuleEnv) {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
-            (Type::Sequence(Box::new(typ.clone())), 2.0),
+            (Type::List(Box::new(typ.clone())), 2.0),
             (Type::Set(Box::new(typ.clone())), 2.0),
+            (Type::Range, 2.0),
         ]);
         self.apply_rule(node_id, &rule, rules_env);
     }
@@ -195,7 +251,8 @@ impl RuleInferrer {
     pub fn apply_index_rule(&mut self, node_id: &str, typ: &Type, rules_env: &mut RuleEnv) {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
-            (Type::Sequence(Box::new(typ.clone())), 2.0),
+            (Type::List(Box::new(typ.clone())), 2.0),
+            (Type::Range, 2.0),
         ]);
         self.apply_rule(node_id, &rule, rules_env);
     }
@@ -218,12 +275,12 @@ impl RuleInferrer {
     }
 
     /**
-     * Apply the index rule to the given variable.
+     * Apply the index-assign rule to the given variable.
      * This rule states that when we index a given variable with an integer and we assign
-     * a value to this slice, the variable is a sequence (strings are immutable).
+     * a value to this slice, the variable is a list (all other sequence types are immutable).
      */
     pub fn apply_index_assign_rule(&mut self, node_id: &str, typ: &Type, rules_env: &mut RuleEnv) {
-        let rule = Vec::from([(Type::Sequence(Box::new(typ.clone())), 3.0)]);
+        let rule = Vec::from([(Type::List(Box::new(typ.clone())), 3.0)]);
         self.apply_rule(node_id, &rule, rules_env);
     }
 

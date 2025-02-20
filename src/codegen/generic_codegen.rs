@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
