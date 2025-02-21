@@ -1,1 +1,2 @@
-range(0,2)
+def foo(x):
+    x[0][0] = True

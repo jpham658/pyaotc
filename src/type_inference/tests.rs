@@ -775,7 +775,7 @@ mod type_env_tests {
                 bounded_vars: BTreeSet::new(),
             },
         );
-        apply_to_type_env(&sub, &type_env);
+        apply_to_type_env(&sub, &mut type_env);
     }
 }
 

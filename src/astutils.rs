@@ -1,6 +1,6 @@
 use rustpython_parser::ast::{Expr, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile};
 
-use crate::type_inference::{Scheme, Type, TypeEnv};
+use crate::type_inference::{ConcreteValue, FuncType, FuncTypeValue, Scheme, Type, TypeEnv};
 
 pub fn print_ast(ast: &[Stmt]) {
     for node in ast {
@@ -9,15 +9,15 @@ pub fn print_ast(ast: &[Stmt]) {
 }
 
 /**
- * Check a given node is iterable
+ * Check a given node is indexable
  */
-pub fn is_iterable(node: &Expr, types: &TypeEnv) -> bool {
+pub fn is_indexable(node: &Expr, types: &TypeEnv) -> bool {
     // check if node is a name
     if let Some(name) = node.as_name_expr() {
         let name_str = name.id.as_str();
         let iterable = match types.get(name_str) {
             Some(Scheme { type_name, .. }) => match **type_name {
-                Type::Set(..) | Type::Range | Type::List(..) | Type::Mapping(_, _) => true,
+                Type::Range | Type::List(..) | Type::Mapping(_, _) => true,
                 _ => false,
             },
             _ => false,
@@ -40,6 +40,52 @@ pub fn is_iterable(node: &Expr, types: &TypeEnv) -> bool {
         || node.is_dict_expr()
         || node.is_set_expr()
         || node.is_tuple_expr();
+}
+
+/**
+ * Check a given node is iterable
+ */
+pub fn is_iterable(node: &Expr, types: &TypeEnv) -> bool {
+    // check if node is a name
+    if let Some(name) = node.as_name_expr() {
+        let name_str = name.id.as_str();
+        let iterable = match types.get(name_str) {
+            Some(Scheme { type_name, .. }) => match **type_name {
+                Type::ConcreteType(ConcreteValue::Str)
+                | Type::Set(..)
+                | Type::Range
+                | Type::List(..)
+                | Type::Mapping(_, _) => true,
+                _ => false,
+            },
+            _ => false,
+        };
+
+        return iterable;
+    }
+
+    // TODO: Check that function name returns an iterable
+    if let Some(call) = node.as_call_expr() {
+        if !call.func.is_name_expr() {
+            return false;
+        }
+
+        let call_name = call.func.as_name_expr().unwrap().id.as_str();
+
+        // TODO: Change this to handle functions that
+        // return iterables
+        // This requires making a helper to extract return types from a nested FuncType
+        match types.get(call_name) {
+            Some(scheme) => return false,
+            None => return call_name.eq("range"),
+        }
+    }
+
+    return node.is_list_expr()
+        || node.is_dict_expr()
+        || node.is_set_expr()
+        || node.is_tuple_expr()
+        || (node.is_constant_expr() && node.as_constant_expr().unwrap().value.is_str());
 }
 
 /**
@@ -89,14 +135,13 @@ pub fn get_iter_type_name(node: &Expr, types: &TypeEnv) -> String {
     type_name.to_string()
 }
 
-
 pub trait GetReturnStmts {
     fn get_return_stmts(self) -> Vec<StmtReturn>;
 }
 
 impl GetReturnStmts for StmtReturn {
     fn get_return_stmts(self) -> Vec<StmtReturn> {
-        return Vec::from([self.clone()])
+        return Vec::from([self.clone()]);
     }
 }
 
