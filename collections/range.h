@@ -12,6 +12,6 @@ typedef struct
 extern size_t range_len(Range *range);
 extern Range *create_range(word start, word stop, word step);
 extern void *range_next(void *iter);
-extern void prword_range(Range *range);
+extern void print_range(Range *range);
 
 #endif

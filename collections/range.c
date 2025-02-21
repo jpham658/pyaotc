@@ -70,11 +70,15 @@ Iterator *range_iter(Range *range)
     return iter;
 }
 
-void printf_range(Range *range)
+void print_range(Range *range)
 {
     if (range == NULL)
     {
         printf("None");
     }
-    printf("range(%ld, %ld, %ld)", range->start, range->stop, range->step);
+    else if (range->step == 1) {
+        printf("range(%ld, %ld)", range->start, range->stop);
+    } else {
+        printf("range(%ld, %ld, %ld)", range->start, range->stop, range->step);
+    }
 }
