@@ -1,2 +1,2 @@
-def foo(x):
-    x[0][0] = True
+for i in range(1,10):
+    print(i)

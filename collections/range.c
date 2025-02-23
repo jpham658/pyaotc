@@ -1,4 +1,5 @@
 #include "range.h"
+#include "iterator.c"
 
 size_t range_len(Range *range)
 {
@@ -62,11 +63,7 @@ void *range_next(void *iter)
 
 Iterator *range_iter(Range *range)
 {
-    Iterator *iter = (Iterator *)GC_malloc(sizeof(Iterator));
-    iter->data = range;
-    iter->current = 0;
-    iter->length = range->length;
-    iter->next = range_next;
+    Iterator *iter = create_iterator(range, sizeof(word), range->length, range_next);
     return iter;
 }
 
@@ -76,9 +73,12 @@ void print_range(Range *range)
     {
         printf("None");
     }
-    else if (range->step == 1) {
+    else if (range->step == 1)
+    {
         printf("range(%ld, %ld)", range->start, range->stop);
-    } else {
+    }
+    else
+    {
         printf("range(%ld, %ld, %ld)", range->start, range->stop, range->step);
     }
 }

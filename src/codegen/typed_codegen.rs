@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use crate::astutils::{get_iter_type_name, is_iterable};
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, build_range_call, handle_global_assignment, store_value,
+    allocate_variable, build_range_call, build_typed_for_loop_body, handle_global_assignment,
+    store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
@@ -342,15 +343,8 @@ impl LLVMTypedCodegen for StmtFor {
         let next_func = match compiler.module.get_function(&next_func_name) {
             Some(func) => func,
             None => {
-                let iterator_ptr_type = compiler
-                    .module
-                    .get_struct_type("struct.Iterator")
-                    .expect("Iterator type hasn't been declared?")
-                    .ptr_type(AddressSpace::default());
-                let next_fn_type = compiler
-                    .context
-                    .void_type()
-                    .fn_type(&[iterator_ptr_type.into()], false);
+                let void_ptr = compiler.context.i8_type().ptr_type(AddressSpace::default());
+                let next_fn_type = void_ptr.fn_type(&[void_ptr.into()], false);
                 let _ = compiler
                     .module
                     .add_function(&next_func_name, next_fn_type, None);
@@ -361,7 +355,7 @@ impl LLVMTypedCodegen for StmtFor {
         let iter_as_param = compiler
             .convert_any_value_to_param_value(iter)
             .expect("Iterable could not be converted to a parameter.");
-
+        
         let iter_ptr = compiler
             .builder
             .build_call(iter_func, &[iter_as_param.into()], "iter")
@@ -371,9 +365,15 @@ impl LLVMTypedCodegen for StmtFor {
             .unwrap()
             .into_pointer_value();
 
-        Err(BackendError {
-            message: "For stmt not implemented yet. ",
-        })
+        build_typed_for_loop_body(
+            compiler,
+            types,
+            iter_ptr,
+            next_func,
+            &self.target,
+            &self.body,
+            &self.orelse,
+        )
     }
 }
 

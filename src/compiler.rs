@@ -36,6 +36,21 @@ impl<'ctx> Compiler<'ctx> {
         let iterator = context.opaque_struct_type("struct.Iterator");
         let range = context.opaque_struct_type("struct.Range");
 
+        let void_ptr = context.i8_type().ptr_type(AddressSpace::default()); // void*
+        let size_t = context.i64_type(); // size_t (assuming 64-bit)
+        let func_ptr = void_ptr.ptr_type(AddressSpace::default());
+
+        iterator.set_body(
+            &[
+                void_ptr.into(), // void *data;
+                size_t.into(),   // size_t item_size;
+                size_t.into(),   // size_t length;
+                size_t.into(),   // size_t current;
+                func_ptr.into(), // void *(*next)(void *);
+            ],
+            false,
+        );
+
         Self {
             context,
             builder,

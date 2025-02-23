@@ -1,4 +1,6 @@
-use rustpython_parser::ast::{Expr, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile};
+use rustpython_parser::ast::{
+    Expr, ExprSubscript, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
+};
 
 use crate::type_inference::{ConcreteValue, FuncType, FuncTypeValue, Scheme, Type, TypeEnv};
 
@@ -9,15 +11,27 @@ pub fn print_ast(ast: &[Stmt]) {
 }
 
 /**
- * Check a given node is indexable
+ * Get root value of subscript
+ * E.g. x[0][0][0] gives x
  */
-pub fn is_indexable(node: &Expr, types: &TypeEnv) -> bool {
+pub fn get_root_value_of_subscript(subscript: &ExprSubscript) -> Expr {
+    if !subscript.value.is_subscript_expr() {
+        *subscript.value.clone()
+    } else {
+        get_root_value_of_subscript(subscript.value.as_subscript_expr().unwrap())
+    }
+}
+
+/**
+ * Check a given node is subcriptable
+ */
+pub fn is_subscriptable(node: &Expr, types: &TypeEnv) -> bool {
     // check if node is a name
     if let Some(name) = node.as_name_expr() {
         let name_str = name.id.as_str();
         let iterable = match types.get(name_str) {
             Some(Scheme { type_name, .. }) => match **type_name {
-                Type::Range | Type::List(..) | Type::Mapping(_, _) => true,
+                Type::Range | Type::List(..) | Type::Mapping(_, _) | Type::TypeVar(..) => true,
                 _ => false,
             },
             _ => false,
@@ -38,8 +52,8 @@ pub fn is_indexable(node: &Expr, types: &TypeEnv) -> bool {
 
     return node.is_list_expr()
         || node.is_dict_expr()
-        || node.is_set_expr()
-        || node.is_tuple_expr();
+        || node.is_tuple_expr()
+        || (node.is_constant_expr() && node.as_constant_expr().unwrap().value.is_str());
 }
 
 /**

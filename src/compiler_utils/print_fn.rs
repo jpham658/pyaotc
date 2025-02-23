@@ -40,6 +40,7 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                     .expect("Could not call print_float.");
             }
             AnyValueEnum::PointerValue(ptr) => {
+                let range_type = compiler.module.get_struct_type("struct.Range").unwrap();
                 if ptr.get_type() == compiler.object_type.ptr_type(AddressSpace::default()) {
                     let print_obj = compiler
                         .module
@@ -53,6 +54,17 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                             BasicMetadataValueEnum::PointerValue(*ptr)
                         ], "")
                         .expect("Could not call print_obj.");
+                } else if ptr.get_type() == range_type.ptr_type(AddressSpace::default()) {
+                    let print_range = compiler
+                        .module
+                        .get_function("print_range")
+                        .expect("print_range is not defined.");
+                    let _ = compiler
+                        .builder
+                        .build_call(print_range, &[
+                            BasicMetadataValueEnum::PointerValue(*ptr)
+                        ], "")
+                        .expect("Could not call print_range.");
                 } else {
                     let print_str = compiler
                         .module

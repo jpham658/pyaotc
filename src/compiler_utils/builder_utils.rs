@@ -1,13 +1,17 @@
 use inkwell::{
-    types::{AnyType, AnyTypeEnum, BasicType},
+    types::{AnyType, AnyTypeEnum, BasicType, PointerType},
     values::{AnyValue, AnyValueEnum, FunctionValue, PointerValue},
     AddressSpace,
 };
 use rustpython_parser::ast::{Expr, ExprCall, Stmt};
 
 use crate::{
-    codegen::error::{BackendError, IRGenResult},
+    codegen::{
+        error::{BackendError, IRGenResult},
+        typed_codegen::LLVMTypedCodegen,
+    },
     compiler::Compiler,
+    type_inference::TypeEnv,
 };
 
 /**
@@ -93,17 +97,159 @@ pub fn build_range_call<'ctx>(
 }
 
 /**
+ * Helper to get element pointer type of an Iterator
+ */
+pub fn get_elt_ptr_size_of_iter<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    iter_ptr: PointerValue<'ctx>,
+) -> Option<PointerType<'ctx>> {
+    let iter_type = compiler.module.get_struct_type("struct.Iterator").unwrap();
+    let iter_ptr_type = iter_type.ptr_type(AddressSpace::default());
+    if iter_ptr.get_type() != iter_ptr_type {
+        return None;
+    }
+    match compiler.builder.build_struct_gep(iter_ptr, 1, "elt_type") {
+        Ok(typ) => Some(typ.get_type()),
+        Err(..) => {
+            eprintln!("Error building GEP");
+            None
+        }
+    }
+}
+
+/**
+ * Helper to build iterator increment
+ */
+pub fn build_iter_increment<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    iter_ptr: PointerValue<'ctx>,
+    next_func: FunctionValue<'ctx>,
+) -> IRGenResult<'ctx> {
+    let void_ptr_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+    let elt_ptr_type = match get_elt_ptr_size_of_iter(compiler, iter_ptr) {
+        Some(typ) => typ,
+        None => {
+            return Err(BackendError {
+                message: "Could not get element type of iterator.",
+            })
+        }
+    };
+
+    let iter_as_void_ptr = compiler
+        .builder
+        .build_pointer_cast(iter_ptr, void_ptr_type, "iter_as_void_ptr")
+        .expect("Could not cast iter pointer.");
+
+    let next_value = compiler
+        .builder
+        .build_call(next_func, &[iter_as_void_ptr.into()], "target")
+        .expect("Failed to call next function")
+        .try_as_basic_value()
+        .left()
+        .unwrap()
+        .into_pointer_value();
+
+    let next_value_as_elt = compiler
+        .builder
+        .build_pointer_cast(next_value, elt_ptr_type, "next_as_elt_ptr")
+        .expect("Could not cast target to element type.");
+
+    Ok(next_value_as_elt.as_any_value_enum())
+}
+
+/**
  * Helper to build for loop body.
  */
-pub fn build_for_loop_body<'ctx>(
+pub fn build_typed_for_loop_body<'ctx>(
     compiler: &mut Compiler<'ctx>,
+    types: &TypeEnv,
     iter_ptr: PointerValue<'ctx>,
     next_func: FunctionValue<'ctx>,
     target: &Expr,
     body: &[Stmt],
-) {
-    // get current from iterator
-    // store that at the variable represented by target
+    orelse: &[Stmt],
+) -> IRGenResult<'ctx> {
+    let target_name = if let Some(name) = target.as_name_expr() {
+        name.id.as_str()
+    } else {
+        return Err(BackendError {
+            message: "Target in for loop is not a name.",
+        });
+    };
+
+    let curr_block = compiler.builder.get_insert_block().unwrap();
+
+    let loop_cond_block = compiler
+        .context
+        .insert_basic_block_after(curr_block, "loop_cond");
+    let loop_body_block = compiler
+        .context
+        .insert_basic_block_after(loop_cond_block, "loop_body");
+    let loop_orelse_block = if orelse.len() > 0 {
+        compiler
+            .context
+            .insert_basic_block_after(loop_cond_block, "loop_orelse")
+    } else {
+        compiler
+            .context
+            .insert_basic_block_after(loop_body_block, "loop_end")
+    };
+    let loop_end_block = if orelse.len() > 0 {
+        compiler
+            .context
+            .insert_basic_block_after(loop_body_block, "loop_end")
+    } else {
+        loop_orelse_block
+    };
+
+    {
+        compiler.sym_table.enter_scope();
+    }
+
+    let _ = compiler.builder.build_unconditional_branch(loop_cond_block);
+    
+    // loop_cond
+    compiler.builder.position_at_end(loop_cond_block);
+    let target =
+        build_iter_increment(compiler, iter_ptr, next_func)?.into_pointer_value();
+    compiler.sym_table.add_variable(
+        target_name,
+        Some(target.as_any_value_enum()),
+        None,
+    );
+    let is_null = compiler
+        .builder
+        .build_is_null(target, "is_null")
+        .expect("Could not build is_null.");
+    let _ = compiler
+        .builder
+        .build_conditional_branch(is_null, loop_orelse_block, loop_body_block);
+
+    // loop_body
+    compiler.builder.position_at_end(loop_body_block);
+    for stmt in body {
+        stmt.typed_codegen(compiler, &types)?;
+    }
+
+    let _ = compiler.builder.build_unconditional_branch(loop_cond_block);
+
+    // loop_orelse
+    if orelse.len() > 0 {
+        compiler.builder.position_at_end(loop_orelse_block);
+        for stmt in orelse {
+            stmt.typed_codegen(compiler, &types)?;
+        }
+        let _ = compiler.builder.build_unconditional_branch(loop_end_block);
+    }
+
+    // End loop
+    compiler.builder.position_at_end(loop_end_block);
+
+    {
+        compiler.sym_table.exit_scope();
+    }
+
+    Ok(is_null.as_any_value_enum())
 }
 
 fn initialise_global_variable<'ctx>(
@@ -201,8 +347,6 @@ pub fn handle_global_assignment<'ctx>(
             }
         }
     }
-
-    // Declare a generic Object* version if applicable
 }
 
 /**
