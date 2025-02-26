@@ -126,6 +126,10 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(main_entry);
 
+        // Initialise Boehm GC
+        let gc_init = self.module.get_function("GC_init").unwrap();
+        let _ = self.builder.build_call(gc_init, &[], "gc_init_call");
+
         for statement in ast {
             match statement.generic_codegen(self) {
                 Ok(_ir) => {}
@@ -135,6 +139,11 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
         }
+
+        // Collect garbage
+        let gc_collect = self.module.get_function("GC_gcollect").unwrap();
+        let _ = self.builder.build_call(gc_collect, &[], "gc_collect_call");
+
 
         let _ = self
             .builder
@@ -236,6 +245,7 @@ impl<'ctx> Compiler<'ctx> {
      * Utils to construct Object* versions of primitive types
      */
     fn setup_obj_constructors(&self) {
+        let range = self.module.get_struct_type("struct.Range").unwrap();
         let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
         let obj_fns = HashMap::from([
             ("new_int", self.context.i64_type().as_any_type_enum()),
@@ -247,6 +257,10 @@ impl<'ctx> Compiler<'ctx> {
                     .i8_type()
                     .ptr_type(AddressSpace::default())
                     .as_any_type_enum(),
+            ),
+            (
+                "new_range",
+                range.ptr_type(AddressSpace::default()).as_any_type_enum(),
             ),
         ]);
         for (fn_name, fn_param) in obj_fns {
@@ -322,7 +336,7 @@ impl<'ctx> Compiler<'ctx> {
             if fn_name.eq("print_obj") {
                 params.insert(0, BasicMetadataTypeEnum::IntType(self.context.i32_type()));
             }
-            let is_var_args = fn_name.eq("print_obj");
+            let is_var_args = fn_name.eq("print_obj") | fn_name.eq("printf");
             let print_fn = if fn_name.eq("printf") {
                 self.context.i32_type().fn_type(&params, is_var_args)
             } else {

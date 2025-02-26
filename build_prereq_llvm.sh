@@ -26,9 +26,12 @@ for FILE in "${C_FILES[@]}"; do
     fi
 done
 
+touch "$OUTPUT_LL"
+
 # Link all generated LLVM IR files into one
 if [[ ${#LL_FILES[@]} -gt 0 ]]; then
-    llvm-link "${LL_FILES[@]}" -S -o "$OUTPUT_LL"
+    echo "Linking LLVM IR files: ${LL_FILES[*]}"
+    llvm-link "${LL_FILES[@]}" -S -o "$OUTPUT_LL" || { echo "llvm-link failed"; exit 1; }
     echo "LLVM IR generated: $OUTPUT_LL"
 else
     echo "No LLVM IR files to link."

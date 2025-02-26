@@ -17,4 +17,7 @@ typedef struct
     void *(*next)(void *);
 } Iterator;
 
+extern Iterator *create_iterator(void *data, size_t item_size, size_t length,
+                                 void *(*next)(void *));
+
 #endif

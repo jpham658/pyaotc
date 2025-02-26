@@ -88,7 +88,7 @@ Object *Mult(Object *left, Object *right)
     else if (object_is_str(left) && object_is_int(right))
     {
         const char *left_as_str = object_as_str(left);
-        const char *right_as_int = object_as_int(right);
+        word *right_as_int = object_as_int(right);
         return new_str(strmult(left_as_str, right_as_int));
     }
     fprintf(stderr, "Incompatible types for multiplication.\n");

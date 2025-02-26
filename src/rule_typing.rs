@@ -114,6 +114,10 @@ pub fn infer_stmts_with_rules(
                         );
                     }
                 }
+
+                if subscript.value.is_subscript_expr() {
+                    remove_str_from_heuristic(&subscript.value, rule_env, rule_type_db);
+                }
             }
             Stmt::If(StmtIf {
                 test, body, orelse, ..
@@ -125,8 +129,35 @@ pub fn infer_stmts_with_rules(
                 let _ = infer_stmts_with_rules(rule_env, body, rule_type_db, type_db);
                 let _ = infer_stmts_with_rules(rule_env, orelse, rule_type_db, type_db);
             }
-            Stmt::For(StmtFor { target, iter, body, orelse, ..}) => {
+            Stmt::For(StmtFor {
+                target,
+                iter,
+                body,
+                orelse,
+                ..
+            }) => {
                 // TODO: Implement for-in loop rule on iter
+                if let Some(Type::Mapping(key_type, val_type)) = type_db.get(&iter.range()) {
+                    rule_inferrer.apply_for_in_stmt_rule(
+                        &iter,
+                        key_type,
+                        val_type,
+                        rule_env,
+                        rule_type_db,
+                    );
+                } else {
+                    let key_type = rule_inferrer.get_new_typevar();
+                    let val_type = rule_inferrer.get_new_typevar();
+                    rule_inferrer.apply_for_in_stmt_rule(
+                        &iter,
+                        &key_type,
+                        &val_type,
+                        rule_env,
+                        rule_type_db,
+                    );
+                }
+                let _ = infer_stmts_with_rules(rule_env, body, rule_type_db, type_db);
+                let _ = infer_stmts_with_rules(rule_env, orelse, rule_type_db, type_db);
             }
             Stmt::Expr(StmtExpr { value, .. }) => {
                 infer_expr_with_rules(rule_env, value, rule_type_db, &mut rule_inferrer, type_db);
@@ -159,17 +190,7 @@ fn infer_expr_with_rules(
                 let value = &attr.value;
                 let attr_name = attr.attr.as_str();
 
-                if attr_name.eq("append") {
-                    let arg_type = type_db
-                        .get(&call.args[0].range())
-                        .expect("Node not defined in type db...");
-                    rule_inferrer.apply_list_operation_rule(
-                        value,
-                        arg_type,
-                        rule_env,
-                        rule_type_db,
-                    );
-                } else if attr_name.eq("clear") || attr_name.eq("copy") {
+                if attr_name.eq("clear") || attr_name.eq("copy") {
                     let typevar = rule_inferrer.get_new_typevar();
                     rule_inferrer.apply_list_operation_rule(
                         value,
@@ -257,6 +278,15 @@ pub fn get_inferred_rule_types(rule_env: &mut RuleEnv) -> TypeEnv {
     type_env
 }
 
+pub fn get_inferred_rule_type_db(rule_type_db: &mut RuleTypeDB) -> NodeTypeDB {
+    let mut type_db = NodeTypeDB::new();
+    for (range, heuristic) in rule_type_db {
+        let most_likely_type = get_most_likely_type(heuristic);
+        type_db.insert(range.clone(), most_likely_type);
+    }
+    type_db
+}
+
 fn get_most_likely_type(heuristic: &Heuristic) -> Type {
     let mut sorted_heuristics = heuristic.iter().collect::<Vec<(_, _)>>();
     sorted_heuristics.sort_by(|(t1, v1), (t2, v2)| {
@@ -319,6 +349,33 @@ pub fn rule_unify_types(expected: &Type, inferred: &Type) -> Type {
     }
 }
 
+/**
+ * Used only when we want to tank the string type prediction
+ */
+pub fn remove_str_from_heuristic(
+    node: &Expr,
+    rule_env: &mut RuleEnv,
+    rule_type_db: &mut RuleTypeDB,
+) {
+    let string_type = Type::ConcreteType(ConcreteValue::Str);
+    if let Some(name) = node.as_name_expr() {
+        let id = name.id.as_str();
+        let heuristic = rule_env.get_mut(id).unwrap();
+        if heuristic.contains_key(&string_type) {
+            heuristic.remove(&string_type);
+        }
+    }
+
+    if let Some(subscript) = node.as_subscript_expr() {
+        let heuristic = rule_type_db.get_mut(&subscript.range()).unwrap();
+        if heuristic.contains_key(&string_type) {
+            heuristic.remove(&string_type);
+        }
+        // recurse to remove string from all parent levels of the subscript
+        remove_str_from_heuristic(&subscript.value, rule_env, rule_type_db);
+    }
+}
+
 struct RuleInferrer {
     pub fresh_var_generator: FreshVariableGenerator,
 }
@@ -333,6 +390,27 @@ impl RuleInferrer {
     pub fn get_new_typevar(&mut self) -> Type {
         let typevar_name = self.fresh_var_generator.next();
         Type::TypeVar(TypeVar(typevar_name))
+    }
+
+    pub fn apply_for_in_stmt_rule(
+        &mut self,
+        node: &Expr,
+        key_type: &Type,
+        val_type: &Type,
+        rule_env: &mut RuleEnv,
+        rule_type_db: &mut RuleTypeDB,
+    ) {
+        let rule = Vec::from([
+            (Type::List(Box::new(val_type.clone())), 2.0),
+            (Type::Set(Box::new(val_type.clone())), 2.0),
+            (Type::ConcreteType(ConcreteValue::Str), 2.0),
+            (Type::Range, 2.0),
+            (
+                Type::Mapping(Box::new(key_type.clone()), Box::new(val_type.clone())),
+                2.0,
+            ),
+        ]);
+        self.apply_rule(node, &rule, rule_env, rule_type_db);
     }
 
     /**

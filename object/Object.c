@@ -4,6 +4,7 @@
 
 #include "object.h"
 #include "gc/gc.h"
+#include "../collections/range.h"
 
 bool object_is_int(Object *obj)
 {
@@ -80,6 +81,11 @@ bool object_is_range(Object *obj)
     return object_type(obj) == RangeT;
 }
 
+bool object_is_iterator(Object *obj)
+{
+    return object_type(obj) == IteratorT;
+}
+
 const char *object_as_str(Object *obj)
 {
     CHECK_PREDICATE(object_is_str(obj), "Invalid string object.");
@@ -90,6 +96,12 @@ double object_as_float(Object *obj)
 {
     CHECK_PREDICATE(object_is_float(obj), "Invalid float object.");
     return object_address(obj)->f_value;
+}
+
+Range *object_as_range(Object *obj)
+{
+    CHECK_PREDICATE(object_is_range(obj), "Invalid range object.");
+    return object_address(obj)->range;
 }
 
 Object *new_str(const char *value)
@@ -111,6 +123,28 @@ Object *new_range(Range *range)
     HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
     *result = (HeapObject){.type = RangeT, .range = range};
     return object_from_address(result);
+}
+
+Object *new_iterator(Iterator *iter)
+{
+    HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
+    *result = (HeapObject){.type = IteratorT, .iter = iter};
+    return object_from_address(result);
+}
+
+Object *build_range_obj(Object *start, Object *stop, Object *step)
+{
+    if (!object_is_int(start) || !object_is_int(stop) || !object_is_int(step))
+    {
+        fprintf(stderr, "Invalid arguments for range.\n");
+        exit(EXIT_FAILURE);
+    }
+    word start_as_int = object_as_int(start);
+    word stop_as_int = object_as_int(stop);
+    word step_as_int = object_as_int(step);
+
+    Range *range = create_range(start_as_int, stop_as_int, step_as_int);
+    return new_range(range);
 }
 
 void print_int(int i)
@@ -170,6 +204,9 @@ void print_obj(int arg_num, Object *obj, ...)
         case Float:
             print_float(object_as_float(curr));
             break;
+        case RangeT:
+            print_range(object_as_range(curr));
+            break;
         default:
             print_str(object_as_str(curr));
             break;
@@ -192,8 +229,75 @@ void print_heap_obj(HeapObject *heap_obj)
     {
         print_float(object_as_float(obj));
     }
+    else if (object_is_range(obj))
+    {
+        print_range(object_as_range(obj));
+    }
     else
     {
         printf("Not valid heap object.");
+    }
+}
+
+bool object_is_iterable(Object *obj)
+{
+    if (obj == NULL)
+    {
+        return false;
+    }
+
+    ObjectType type = object_type(obj);
+
+    return (type == RangeT || type == Str);
+}
+
+Iterator *object_as_iterator(Object *obj)
+{
+    CHECK_PREDICATE(object_is_iterator(obj), "Invalid iterator object.");
+    return object_address(obj)->iter;
+}
+
+Object *object_into_iterator(Object *obj)
+{
+    CHECK_PREDICATE(object_is_iterable(obj), "Object cannot be converted to iterator.");
+    switch (object_type(obj))
+    {
+    case RangeT:
+    {
+        Range *range = object_as_range(obj);
+        Iterator *range_as_iter = range_iter(range);
+        return new_iterator(range_as_iter);
+    }
+    default:
+    {
+        // TODO: if we get here, it means that all possible types are exhausted, so we
+        // have an iterator.
+        return obj;
+    }
+    }
+}
+
+Object *object_next(Object *obj)
+{
+    CHECK_PREDICATE(object_is_iterator(obj), "Cannot get next of object.");
+
+    Iterator *obj_iter = object_as_iterator(obj);
+
+    // case for range
+    if (obj_iter->item_size == sizeof(word))
+    {
+        word *next_range_val = obj_iter->next(obj_iter);
+        if (next_range_val == NULL)
+        {
+            return NULL;
+        }
+        else
+        {
+            return new_int(*next_range_val);
+        }
+    }
+    else
+    {
+        return (Object *)obj_iter->next(obj_iter);
     }
 }

@@ -1,5 +1,5 @@
 #include "range.h"
-#include "iterator.c"
+#include "iterator.h"
 
 size_t range_len(Range *range)
 {
@@ -32,7 +32,7 @@ Range *create_range(word start, word stop, word step)
     return range;
 }
 
-word range_get_item(Range *range, word index, word *result)
+word range_index(Range *range, word index, word *result)
 {
     if (index < 0)
         index += range->length;

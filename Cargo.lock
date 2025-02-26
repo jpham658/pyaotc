@@ -410,6 +410,7 @@ dependencies = [
  "lang_tester",
  "llvm-sys",
  "malachite-bigint",
+ "rustpython-ast",
  "rustpython-parser",
 ]
 

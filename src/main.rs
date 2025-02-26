@@ -59,8 +59,8 @@ fn main() {
 
             println!("type env: {:?}", type_env);
             println!("type db: {:?}", type_db);
-            compiler.compile(&ast, &type_env, file_name);
-            // compiler.compile_generically(&ast);
+            // compiler.compile(&ast, &type_env, file_name);
+            compiler.compile_generically(&ast, file_name);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);

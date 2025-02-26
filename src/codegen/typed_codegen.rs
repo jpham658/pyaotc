@@ -10,15 +10,15 @@ use rustpython_parser::ast::{
 
 use std::collections::HashMap;
 
-use crate::astutils::{get_iter_type_name, is_iterable};
+use crate::astutils::get_iter_type_name;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
     allocate_variable, build_range_call, build_typed_for_loop_body, handle_global_assignment,
-    store_value,
+    is_iterable, store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
-use crate::type_inference::{ConcreteValue, Scheme, Type, TypeEnv};
+use crate::type_inference::{ConcreteValue, Type, TypeEnv};
 
 use super::error::{BackendError, IRGenResult};
 use super::generic_codegen::LLVMGenericCodegen;
@@ -152,9 +152,8 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             }
             // TODO: Extend to handle Any cases in the case of ambiguous return types
             _ => {
-                println!("{:?}", return_type);
                 return Err(BackendError {
-                    message: "Not a valid function return type.",
+                    message: "The compiler needs a bit more help to infer this function, please annotate the function with more information!",
                 });
             }
         };
@@ -318,13 +317,13 @@ impl LLVMTypedCodegen for StmtFor {
         compiler: &mut Compiler<'ctx>,
         types: &TypeEnv,
     ) -> IRGenResult<'ir> {
-        if !is_iterable(&self.iter, types) {
+        let iter = self.iter.typed_codegen(compiler, types)?;
+        if !is_iterable(compiler, &iter) {
             return Err(BackendError {
-                message: "Cannot iterate over given iterator.",
+                message: "Invalid iterator type.",
             });
         }
 
-        let iter = self.iter.typed_codegen(compiler, types)?;
         let iter_type = get_iter_type_name(&self.iter, types);
 
         if iter_type.is_empty() {
@@ -355,7 +354,7 @@ impl LLVMTypedCodegen for StmtFor {
         let iter_as_param = compiler
             .convert_any_value_to_param_value(iter)
             .expect("Iterable could not be converted to a parameter.");
-        
+
         let iter_ptr = compiler
             .builder
             .build_call(iter_func, &[iter_as_param.into()], "iter")

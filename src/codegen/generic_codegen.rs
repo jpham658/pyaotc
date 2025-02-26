@@ -6,14 +6,15 @@ use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
-    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFunctionDef,
-    StmtIf, StmtWhile,
+    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFor,
+    StmtFunctionDef, StmtIf, StmtWhile,
 };
 
 use crate::astutils::GetReturnStmts;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, handle_global_assignment, store_value,
+    allocate_variable, build_generic_for_loop_body, build_generic_range_call,
+    handle_global_assignment, store_value,
 };
 use crate::compiler_utils::to_any_type::ToAnyType;
 
@@ -68,6 +69,7 @@ impl LLVMGenericCodegen for Stmt {
             Stmt::Assign(assign) => assign.generic_codegen(compiler),
             Stmt::If(ifstmt) => ifstmt.generic_codegen(compiler),
             Stmt::While(whilestmt) => whilestmt.generic_codegen(compiler),
+            Stmt::For(forstmt) => forstmt.generic_codegen(compiler),
             Stmt::Return(return_stmt) => match &return_stmt.value {
                 None => {
                     let ret_none = compiler
@@ -238,6 +240,67 @@ impl LLVMGenericCodegen for StmtAssign {
         store_value(compiler, &target_ptr, &value)?;
 
         Ok(target_ptr.as_any_value_enum())
+    }
+}
+
+impl LLVMGenericCodegen for StmtFor {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
+        let iter_obj = self.iter.generic_codegen(compiler)?;
+        let iter_type = iter_obj.get_type();
+        let bool_type = compiler.context.bool_type();
+
+        if iter_type == bool_type.as_any_type_enum() {
+            return Err(BackendError {
+                message: "Invalid iterator type given.",
+            });
+        }
+
+        let obj_next_fn = match compiler.module.get_function("object_next") {
+            Some(func) => func,
+            None => {
+                let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+                let obj_next_fn_type = obj_ptr_type.fn_type(&[obj_ptr_type.into()], false);
+                let _ = compiler
+                    .module
+                    .add_function("object_next", obj_next_fn_type, None);
+                compiler.module.get_function("object_next").unwrap()
+            }
+        };
+
+        let object_into_iter_fn = match compiler.module.get_function("object_into_iterator") {
+            Some(func) => func,
+            None => {
+                let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+                let obj_next_fn_type = obj_ptr_type.fn_type(&[obj_ptr_type.into()], false);
+                let _ =
+                    compiler
+                        .module
+                        .add_function("object_into_iterator", obj_next_fn_type, None);
+                compiler
+                    .module
+                    .get_function("object_into_iterator")
+                    .unwrap()
+            }
+        };
+
+        let iter = compiler
+            .builder
+            .build_call(
+                object_into_iter_fn,
+                &[compiler.convert_any_value_to_param_value(iter_obj).unwrap()],
+                "obj_as_iter",
+            )
+            .expect("Could not call object_into_iterator.")
+            .as_any_value_enum();
+
+        build_generic_for_loop_body(
+            compiler,
+            &iter.into_pointer_value(),
+            obj_next_fn,
+            &self.body,
+            &self.orelse,
+            &self.target,
+        )
     }
 }
 
@@ -642,6 +705,13 @@ impl LLVMGenericCodegen for ExprCall {
         let function;
         if func_name.eq("print") {
             function = compiler.module.get_function("print_obj").unwrap();
+        } else if func_name.eq("range") {
+            let args = self
+                .args
+                .iter()
+                .map(|arg| arg.generic_codegen(compiler))
+                .collect::<Result<Vec<_>, BackendError>>()?;
+            return build_generic_range_call(compiler, args);
         } else {
             let generic_fn_name = format!("{}_g", func_name);
             function = compiler

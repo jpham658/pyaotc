@@ -3,16 +3,133 @@ use inkwell::{
     values::{AnyValue, AnyValueEnum, FunctionValue, PointerValue},
     AddressSpace,
 };
-use rustpython_parser::ast::{Expr, ExprCall, Stmt};
+use rustpython_parser::ast::{Expr, Stmt};
 
 use crate::{
     codegen::{
         error::{BackendError, IRGenResult},
+        generic_codegen::LLVMGenericCodegen,
         typed_codegen::LLVMTypedCodegen,
     },
     compiler::Compiler,
     type_inference::TypeEnv,
 };
+
+/**
+ * Helper to check if a value is iterable
+ */
+pub fn is_iterable<'ctx>(compiler: &mut Compiler<'ctx>, value: &AnyValueEnum<'ctx>) -> bool {
+    let range_type = compiler.module.get_struct_type("struct.Range").unwrap();
+    let iter_type = compiler.module.get_struct_type("struct.Iterator").unwrap();
+    let str_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+
+    if !value.get_type().is_pointer_type() {
+        return false;
+    }
+
+    let val_ptr_type = value.get_type().into_pointer_type();
+
+    println!("{:?}", val_ptr_type);
+
+    return val_ptr_type == range_type.ptr_type(AddressSpace::default())
+        || val_ptr_type == iter_type.ptr_type(AddressSpace::default())
+        || val_ptr_type == str_type;
+}
+
+/**
+ * Helper to build generic range call
+ */
+pub fn build_generic_range_call<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    args: Vec<AnyValueEnum<'ctx>>,
+) -> IRGenResult<'ctx> {
+    if args.len() == 0 {
+        return Err(BackendError {
+            message: "Too few arguments given to range call.",
+        });
+    }
+
+    if args.len() > 3 {
+        return Err(BackendError {
+            message: "Too many arguments given to range call.",
+        });
+    }
+
+    let new_int_fn = compiler.module.get_function("new_int").unwrap();
+
+    let start = if args.len() > 1 {
+        args[0]
+    } else {
+        let zero = compiler.context.i64_type().const_int(0, false);
+        compiler
+            .builder
+            .build_call(
+                new_int_fn,
+                &[compiler
+                    .convert_any_value_to_param_value(zero.as_any_value_enum())
+                    .expect("Could not convert int to param value.")],
+                "start_obj",
+            )
+            .expect("Could not call new_int.")
+            .as_any_value_enum()
+    };
+    let stop = if args.len() > 1 { args[1] } else { args[0] };
+    let step = if args.len() == 3 {
+        args[2]
+    } else {
+        let one = compiler.context.i64_type().const_int(1, false);
+        compiler
+            .builder
+            .build_call(
+                new_int_fn,
+                &[compiler
+                    .convert_any_value_to_param_value(one.as_any_value_enum())
+                    .expect("Could not convert int to param value.")],
+                "start_obj",
+            )
+            .expect("Could not call new_int.")
+            .as_any_value_enum()
+    };
+
+    let build_range_obj_fn = match compiler.module.get_function("build_range_obj") {
+        Some(func) => func,
+        None => {
+            let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+            let arg_types = Vec::from([
+                compiler
+                    .convert_any_type_to_param_type(obj_ptr_type.as_any_type_enum())
+                    .unwrap(),
+                compiler
+                    .convert_any_type_to_param_type(obj_ptr_type.as_any_type_enum())
+                    .unwrap(),
+                compiler
+                    .convert_any_type_to_param_type(obj_ptr_type.as_any_type_enum())
+                    .unwrap(),
+            ]);
+            let build_range_obj_fn_type = obj_ptr_type.fn_type(&arg_types, false);
+            let _ = compiler
+                .module
+                .add_function("build_range_obj", build_range_obj_fn_type, None);
+            compiler.module.get_function("build_range_obj").unwrap()
+        }
+    };
+    let build_range_obj_call = compiler.builder.build_call(
+        build_range_obj_fn,
+        &[
+            compiler.convert_any_value_to_param_value(start).unwrap(),
+            compiler.convert_any_value_to_param_value(stop).unwrap(),
+            compiler.convert_any_value_to_param_value(step).unwrap(),
+        ],
+        "range_obj",
+    );
+
+    match build_range_obj_call {
+        Ok(ir) => Ok(ir.as_any_value_enum()),
+        Err(..) => Err(BackendError {
+            message: "Could not build call.",
+        }),
+    }
+}
 
 /**
  * Helper to build a range call
@@ -118,6 +235,111 @@ pub fn get_elt_ptr_size_of_iter<'ctx>(
 }
 
 /**
+ * Helper to build for loop body for generic codegen
+ */
+pub fn build_generic_for_loop_body<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    iter_ptr: &PointerValue<'ctx>,
+    next_func: FunctionValue<'ctx>,
+    body: &[Stmt],
+    orelse: &[Stmt],
+    target: &Expr,
+) -> IRGenResult<'ctx> {
+    let target_name = if let Some(name) = target.as_name_expr() {
+        name.id.as_str()
+    } else {
+        return Err(BackendError {
+            message: "Target in for loop is not a name.",
+        });
+    };
+
+    let curr_block = compiler.builder.get_insert_block().unwrap();
+
+    let loop_cond_block = compiler
+        .context
+        .insert_basic_block_after(curr_block, "loop_cond");
+    let loop_body_block = compiler
+        .context
+        .insert_basic_block_after(loop_cond_block, "loop_body");
+    let loop_orelse_block = if orelse.len() > 0 {
+        compiler
+            .context
+            .insert_basic_block_after(loop_cond_block, "loop_orelse")
+    } else {
+        compiler
+            .context
+            .insert_basic_block_after(loop_body_block, "loop_end")
+    };
+    let loop_end_block = if orelse.len() > 0 {
+        compiler
+            .context
+            .insert_basic_block_after(loop_body_block, "loop_end")
+    } else {
+        loop_orelse_block
+    };
+
+    {
+        compiler.sym_table.enter_scope();
+    }
+
+    let _ = compiler.builder.build_unconditional_branch(loop_cond_block);
+
+    // loop_cond
+    let _ = compiler.builder.position_at_end(loop_cond_block);
+    let iter_ptr_as_param = compiler
+        .convert_any_value_to_param_value(iter_ptr.as_any_value_enum())
+        .expect("Could not convert iterator to param value.");
+
+    let next_value = compiler
+        .builder
+        .build_call(next_func, &[iter_ptr_as_param.into()], "next_val")
+        .expect("Could not increment iterator.")
+        .as_any_value_enum();
+    
+    let target_ptr = allocate_variable(compiler, target_name, &next_value.as_any_value_enum())?;
+    let _ = compiler.builder.build_store(
+        target_ptr.into_pointer_value(),
+        next_value.into_pointer_value(),
+    );
+    compiler
+        .sym_table
+        .add_variable(target_name, None, Some(target_ptr.as_any_value_enum()));
+    let is_null = compiler
+        .builder
+        .build_is_null(next_value.into_pointer_value(), "is_null")
+        .expect("Could not build is_null.");
+    let _ = compiler
+        .builder
+        .build_conditional_branch(is_null, loop_orelse_block, loop_body_block);
+
+    // loop_body
+    compiler.builder.position_at_end(loop_body_block);
+    for stmt in body {
+        stmt.generic_codegen(compiler)?;
+    }
+
+    let _ = compiler.builder.build_unconditional_branch(loop_cond_block);
+
+    // loop_orelse
+    if orelse.len() > 0 {
+        compiler.builder.position_at_end(loop_orelse_block);
+        for stmt in orelse {
+            stmt.generic_codegen(compiler)?;
+        }
+        let _ = compiler.builder.build_unconditional_branch(loop_end_block);
+    }
+
+    // End loop
+    compiler.builder.position_at_end(loop_end_block);
+
+    {
+        compiler.sym_table.exit_scope();
+    }
+
+    Ok(is_null.as_any_value_enum())
+}
+
+/**
  * Helper to build iterator increment
  */
 pub fn build_iter_increment<'ctx>(
@@ -207,16 +429,13 @@ pub fn build_typed_for_loop_body<'ctx>(
     }
 
     let _ = compiler.builder.build_unconditional_branch(loop_cond_block);
-    
+
     // loop_cond
     compiler.builder.position_at_end(loop_cond_block);
-    let target =
-        build_iter_increment(compiler, iter_ptr, next_func)?.into_pointer_value();
-    compiler.sym_table.add_variable(
-        target_name,
-        Some(target.as_any_value_enum()),
-        None,
-    );
+    let target = build_iter_increment(compiler, iter_ptr, next_func)?.into_pointer_value();
+    compiler
+        .sym_table
+        .add_variable(target_name, Some(target.as_any_value_enum()), None);
     let is_null = compiler
         .builder
         .build_is_null(target, "is_null")

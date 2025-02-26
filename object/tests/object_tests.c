@@ -76,6 +76,66 @@ void test_object_as_bool()
     assert(object_as_bool(bool_obj) == false);
 }
 
+void test_object_is_range_on_range()
+{
+    Range *range = create_range(0, 2, 1);
+    Object *range_obj = new_range(range);
+    assert(object_is_range(range_obj));
+}
+
+void test_object_is_range_on_non_range()
+{
+    Object *bool_obj = new_bool(false);
+    assert(!object_is_range(bool_obj));
+}
+
+void test_object_as_range()
+{
+    Range *range = create_range(0, 2, 1);
+    Object *range_obj = new_range(range);
+    assert(object_as_range(range_obj) == range);
+}
+
+void test_object_as_iterator()
+{
+    Range *range = create_range(0, 2, 1);
+    Iterator *obj_as_iter = range_iter(range);
+    Object *iter_obj = new_iterator(obj_as_iter);
+    assert(object_as_iterator(iter_obj) == obj_as_iter);
+}
+
+void test_object_into_iterator()
+{
+    Range *range = create_range(0, 2, 1);
+    Object *range_obj = new_range(range);
+    Object *range_as_iter = object_into_iterator(range_obj);
+    assert(object_type(range_as_iter) == IteratorT);
+    Iterator *iter = object_as_iterator(range_as_iter);
+    assert(iter->data == range);
+}
+
+void test_object_next()
+{
+    Range *range = create_range(0, 2, 1);
+    Object *range_obj = new_range(range);
+    Object *range_as_iter = object_into_iterator(range_obj);
+    Object *next_val = object_next(range_as_iter);
+    assert(object_is_int(next_val));
+    assert(object_as_int(next_val) == 0);
+}
+
+void test_iterating_over_obj()
+{
+    Range *range = create_range(0, 2, 1);
+    Object *range_obj = new_range(range);
+    Object *range_as_iter = object_into_iterator(range_obj);
+    Object* curr = object_next(range_as_iter);
+    while (curr) {
+        print_obj(1, curr);
+        curr = object_next(range_as_iter);
+    }
+}
+
 int main()
 {
     test_object_is_int_on_int();
@@ -93,6 +153,16 @@ int main()
     test_object_is_bool_on_bool();
     test_object_is_bool_on_non_bool();
     test_object_as_bool();
+
+    test_object_is_range_on_range();
+    test_object_is_range_on_non_range();
+    test_object_as_range();
+
+    test_object_as_iterator();
+    test_object_into_iterator();
+    test_object_next();
+
+    test_iterating_over_obj();
 
     printf("Object tests successful.\n");
     return 0;
