@@ -1,6 +1,7 @@
 #![deny(elided_lifetimes_in_paths)]
 
 mod astutils;
+mod call_collector;
 mod codegen;
 mod compiler;
 mod compiler_utils;
@@ -8,6 +9,7 @@ mod rule_typing;
 mod type_inference;
 
 use astutils::print_ast;
+use call_collector::FunctionCallCollector;
 use compiler::Compiler;
 use inkwell::context::Context;
 use rustpython_parser::{
@@ -22,7 +24,11 @@ fn main() {
     // if args.len() <= 1 {
     //     panic!("Please enter a Python file to compile.");
     // }
-    let python_source_path = if args.len() > 1 { &args[1] } else { "test.py" };
+    let python_source_path = if args.len() > 1 {
+        &args[1]
+    } else {
+        "test.py"
+    };
     let python_source = fs::read_to_string(python_source_path)
         .expect(format!("Could not read file {}", &python_source_path).as_str());
     if Path::new(python_source_path)
@@ -39,7 +45,7 @@ fn main() {
             .expect("Invalid file path.")
     };
     let context = Context::create();
-    
+
     // TODO: Refactor to take flag from command args
     // to decide if we generically compile or not...
     let mut compiler = Compiler::new(&context, false);
@@ -49,18 +55,16 @@ fn main() {
 
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
-            // do one round of type inferrence first,
-            // then while types in type_env are not bound,
-            // swap between rule inferrence and normal type inferrence?
-
             print_ast(&ast);
             // normal type inferrence
             infer_ast_types(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
+            println!("type db {:?}", type_db);
 
-            println!("type env: {:?}", type_env);
-            println!("type db: {:?}", type_db);
+            let mut call_collector = FunctionCallCollector::new(&type_db);
+            call_collector.collect_calls(&ast);
+            println!("{:?}", call_collector.most_common_arg_types());
             // compiler.compile(&ast, &type_env, file_name);
-            compiler.compile_generically(&ast, file_name);
+            // compiler.compile_generically(&ast, file_name);
         }
         Err(e) => {
             eprintln!("ParseError: {}", e);

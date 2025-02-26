@@ -4,6 +4,7 @@ use std::{
     hash::Hash,
 };
 
+use rustpython_ast::{ExprList, ExprSet};
 use rustpython_parser::{
     ast::{
         located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, ExprSubscript, Ranged,
@@ -131,15 +132,13 @@ pub fn infer_ast_types(
                             env.insert(
                                 lhs_name,
                                 Scheme {
-                                    type_name: Box::new(typ),
+                                    type_name: Box::new(typ.clone()),
                                     bounded_vars: BTreeSet::new(),
                                 },
                             );
-                        } else {
-                            type_db.insert(lhs_val.range(), typ);
                         }
+                        type_db.insert(lhs_val.range(), typ);
                     }
-                    // if not a named expr, deal with in rule typing.
                 }
                 Stmt::AnnAssign(annassign) => {
                     if let Some(name) = annassign.target.as_name_expr() {
@@ -264,6 +263,17 @@ impl TypeInferrer {
         }
 
         let func_name = func.as_name_expr().unwrap().id.as_str();
+
+        let mut arg_types = Vec::new();
+        let mut composite_subs = Sub::new();
+
+        for arg in &call.args {
+            let mut new_env = apply_to_type_env(&composite_subs, env);
+            let (sub_arg, arg_type) = self.infer_expression(&mut new_env, arg, type_db)?;
+            composite_subs = compose_subs(&composite_subs, &sub_arg);
+            arg_types.push(arg_type);
+        }
+
         if func_name.eq("print") {
             return Ok((Sub::new(), Type::ConcreteType(ConcreteValue::None)));
         }
@@ -287,15 +297,18 @@ impl TypeInferrer {
             return Ok((sub, Type::Range));
         }
 
-        let (sub1, type1) = self.infer_expression(env, func, type_db)?;
+        let (func_sub, type1) = self.infer_expression(env, func, type_db)?;
+        composite_subs = compose_subs(&composite_subs, &func_sub);
+
+        println!("composite subs {:?}", composite_subs);
 
         // func_name is always gonna have a scheme returned
         let scheme_type1;
 
         match &type1 {
             Type::Scheme(scheme) => match &*scheme.type_name {
-                Type::ConcreteType(..) => return Ok((sub1, type1.clone())),
-                Type::TypeVar(..) => return Ok((sub1, *scheme.type_name.clone())),
+                Type::ConcreteType(..) => return Ok((composite_subs, type1.clone())),
+                Type::TypeVar(..) => return Ok((composite_subs, *scheme.type_name.clone())),
                 _ => scheme_type1 = scheme,
             },
             _ => {
@@ -304,18 +317,6 @@ impl TypeInferrer {
                 })
             }
         }
-
-        let mut composite_subs = sub1.clone();
-        let mut arg_types = Vec::new();
-
-        for arg in &call.args {
-            let mut new_env = apply_to_type_env(&composite_subs, env);
-            let (sub_arg, arg_type) = self.infer_expression(&mut new_env, arg, type_db)?;
-            composite_subs = compose_subs(&composite_subs, &sub_arg);
-            arg_types.push(arg_type);
-        }
-
-        println!("composite subs {:?}", composite_subs);
 
         let return_type = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
 
@@ -338,6 +339,9 @@ impl TypeInferrer {
         };
         let final_subs = compose_subs(&resultant_sub, &composite_subs);
         let final_return_type = apply(&final_subs, &return_type);
+
+        type_db.insert(call.range(), final_return_type.clone());
+
         Ok((final_subs, final_return_type))
     }
 
@@ -406,11 +410,11 @@ impl TypeInferrer {
             subs = compose_subs(&subs, &unifier);
         }
 
-        for (range, typ) in &inferred_rule_type_db {
-            let curr_type = type_db.get(range).unwrap();
-            let unifier = unify(&typ, &curr_type)?;
-            subs = compose_subs(&subs, &unifier);
-        }
+        // for (range, typ) in &inferred_rule_type_db {
+        //     let curr_type = type_db.get(range).unwrap();
+        //     let unifier = unify(&typ, &curr_type)?;
+        //     subs = compose_subs(&subs, &unifier);
+        // }
 
         // update arg types with rule-inferred types if necessary
         let mut updated_arg_types = arg_types.clone();
@@ -539,24 +543,10 @@ impl TypeInferrer {
                     | (_, Type::ConcreteType(ConcreteValue::Float)) => {
                         Type::ConcreteType(ConcreteValue::Float)
                     }
-                    (Type::ConcreteType(ConcreteValue::Str), _) => {
-                        Type::ConcreteType(ConcreteValue::Str)
-                    }
-                    (typ, Type::ConcreteType(ConcreteValue::Str)) => {
-                        if let Type::ConcreteType(val) = typ {
-                            match val {
-                                ConcreteValue::Str => Type::ConcreteType(ConcreteValue::Str),
-                                _ => {
-                                    return Err(InferenceError {
-                                        message: "Cannot perform operation with string on RHS."
-                                            .to_string(),
-                                    })
-                                }
-                            }
-                        } else {
-                            Type::ConcreteType(ConcreteValue::Str)
-                        }
-                    }
+                    (
+                        Type::ConcreteType(ConcreteValue::Str),
+                        Type::ConcreteType(ConcreteValue::Str),
+                    ) => Type::ConcreteType(ConcreteValue::Str),
                     _ => {
                         return Err(InferenceError {
                             message: "Expression type not implemented yet.".to_string(),
@@ -566,12 +556,21 @@ impl TypeInferrer {
 
                 Ok((composite_subs, resultant_type))
             }
-            Expr::Constant(lit) => self.infer_literal(lit),
+            Expr::Constant(lit) => {
+                let (lit_sub, lit_type) = self.infer_literal(lit)?;
+                type_db.insert(lit.range(), lit_type.clone());
+                Ok((lit_sub, lit_type))
+            }
             Expr::Name(name) => {
                 let var = name.id.as_str();
                 match env.get(var) {
                     Some(scheme) => {
                         let typ = instantiate(scheme, self);
+                        let type_db_type = match &*scheme.type_name {
+                            Type::Scheme(s) => *s.type_name.clone(),
+                            _ => *scheme.type_name.clone(),
+                        };
+                        type_db.insert(name.range(), type_db_type);
                         return Ok((Sub::new(), typ));
                     }
                     None => Err(InferenceError {
@@ -596,7 +595,14 @@ impl TypeInferrer {
                         Type::Scheme(scheme) => unify(&scheme.type_name, &comparator_type)?,
                         _ => unify(&left_type, &comparator_type)?,
                     };
-                    composed_sub = compose_subs(&composed_sub, &unified_sub);
+                    composed_sub =
+                        compose_subs(&composed_sub, &compose_subs(&unified_sub, &comparator_sub));
+
+                    let type_db_type = match &comparator_type {
+                        Type::Scheme(s) => *s.type_name.clone(),
+                        _ => comparator_type.clone(),
+                    };
+                    type_db.insert(comparator.range(), type_db_type);
                 }
 
                 // The result of a comparison is always a bool
@@ -615,44 +621,8 @@ impl TypeInferrer {
                 Ok((composed_sub, inferred_type))
             }
             Expr::Subscript(subscript) => self.infer_subscript(env, subscript, type_db),
-            Expr::List(list) => {
-                if list.elts.is_empty() {
-                    let typevar = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
-                    return Ok((Sub::new(), typevar));
-                }
-                let (mut elt_sub, elt_type) = self.infer_expression(env, &list.elts[0], type_db)?;
-                for idx in 1..list.elts.len() {
-                    let (idx_sub, idx_type) =
-                        self.infer_expression(env, &list.elts[idx], type_db)?;
-                    if idx_type != elt_type {
-                        return Err(InferenceError {
-                            message: "Cannot have list with elements of differing types."
-                                .to_string(),
-                        });
-                    }
-                    elt_sub = compose_subs(&elt_sub, &idx_sub);
-                }
-                Ok((elt_sub, Type::List(Box::new(elt_type))))
-            }
-            Expr::Set(set) => {
-                if set.elts.is_empty() {
-                    let typevar = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
-                    return Ok((Sub::new(), typevar));
-                }
-                let (mut elt_sub, elt_type) = self.infer_expression(env, &set.elts[0], type_db)?;
-                for idx in 1..set.elts.len() {
-                    let (idx_sub, idx_type) =
-                        self.infer_expression(env, &set.elts[idx], type_db)?;
-                    if idx_type != elt_type {
-                        return Err(InferenceError {
-                            message: "Cannot have list with elements of differing types."
-                                .to_string(),
-                        });
-                    }
-                    elt_sub = compose_subs(&elt_sub, &idx_sub);
-                }
-                Ok((elt_sub, Type::Set(Box::new(elt_type))))
-            }
+            Expr::List(list) => self.infer_list(env, list, type_db),
+            Expr::Set(set) => self.infer_set(env, set, type_db),
             _ => Err(InferenceError {
                 message: format!(
                     "Inferrence not implemented for expression {:?}.",
@@ -660,6 +630,58 @@ impl TypeInferrer {
                 ),
             }),
         }
+    }
+
+    pub fn infer_list(
+        &mut self,
+        env: &mut TypeEnv,
+        list: &ExprList,
+        type_db: &mut NodeTypeDB,
+    ) -> TypeInferenceRes {
+        let (list_sub, list_type) = if list.elts.is_empty() {
+            let typevar = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
+            (Sub::new(), Type::List(Box::new(typevar)))
+        } else {
+            let (mut elt_sub, elt_type) = self.infer_expression(env, &list.elts[0], type_db)?;
+            for idx in 1..list.elts.len() {
+                let (idx_sub, idx_type) = self.infer_expression(env, &list.elts[idx], type_db)?;
+                if idx_type != elt_type {
+                    return Err(InferenceError {
+                        message: "Cannot have list with elements of differing types.".to_string(),
+                    });
+                }
+                elt_sub = compose_subs(&elt_sub, &idx_sub);
+            }
+            (elt_sub, Type::List(Box::new(elt_type)))
+        };
+        type_db.insert(list.range(), list_type.clone());
+        Ok((list_sub, list_type))
+    }
+
+    pub fn infer_set(
+        &mut self,
+        env: &mut TypeEnv,
+        set: &ExprSet,
+        type_db: &mut NodeTypeDB,
+    ) -> TypeInferenceRes {
+        let (set_sub, set_type) = if set.elts.is_empty() {
+            let typevar = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
+            (Sub::new(), Type::List(Box::new(typevar)))
+        } else {
+            let (mut elt_sub, elt_type) = self.infer_expression(env, &set.elts[0], type_db)?;
+            for idx in 1..set.elts.len() {
+                let (idx_sub, idx_type) = self.infer_expression(env, &set.elts[idx], type_db)?;
+                if idx_type != elt_type {
+                    return Err(InferenceError {
+                        message: "Cannot have list with elements of differing types.".to_string(),
+                    });
+                }
+                elt_sub = compose_subs(&elt_sub, &idx_sub);
+            }
+            (elt_sub, Type::List(Box::new(elt_type)))
+        };
+        type_db.insert(set.range(), set_type.clone());
+        Ok((set_sub, set_type))
     }
 
     pub fn infer_subscript(
@@ -828,6 +850,27 @@ impl TypeInferrer {
 
                 let (iter_sub, iter_type) = self.infer_expression(env, iter, type_db)?;
                 let target_name = target.as_name_expr().unwrap().id.as_str().to_string();
+
+                // match &iter_type {
+                //     Type::Range => {
+                //         type_db.insert(target.range(), Type::ConcreteType(ConcreteValue::Int));
+                //     }
+                //     Type::ConcreteType(ConcreteValue::Str) => {
+                //         type_db.insert(target.range(), Type::ConcreteType(ConcreteValue::Str));
+                //     }
+                //     Type::List(elt_type) | Type::Set(elt_type) => {
+                //         type_db.insert(target.range(), *elt_type.clone());
+                //     }
+                //     Type::TypeVar(..) => {
+                //         let elt_type = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
+                //         type_db.insert(target.range(), elt_type);
+                //     }
+                //     _ => {}
+                // }
+
+                let elt_type = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
+                type_db.insert(target.range(), elt_type);
+
                 let mut new_env = env.clone();
                 new_env.insert(
                     target_name,
@@ -853,6 +896,7 @@ impl TypeInferrer {
                         Err(..) => Sub::new(),
                     })
                     .fold(iter_sub, |acc, sub| compose_subs(&acc, &sub));
+
                 Ok((composed_sub, Type::ConcreteType(ConcreteValue::None)))
             }
             Stmt::While(StmtWhile {

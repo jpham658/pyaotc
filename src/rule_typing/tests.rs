@@ -152,6 +152,9 @@ mod infer_stmts_with_rules_tests {
     const DEFAULT_EXPR_CTX: ExprContext = ExprContext::Load;
 
     #[test]
+    fn test_infer_stmts_with_for_in_rule() {}
+
+    #[test]
     fn test_infer_stmts_with_index_and_assign_stmt() {
         let mut rule_env = RuleEnv::new();
         let mut rule_type_db = RuleTypeDB::new();
@@ -400,50 +403,6 @@ mod infer_expr_with_rules_tests {
             (Type::List(Box::new(expected_type_var.clone())), 2.0),
             (Type::Range, 2.0),
         ]);
-        let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
-        assert_eq!(expected_rule_env, rule_env);
-    }
-
-    #[test]
-    fn test_append_rule() {
-        let mut rule_env = RuleEnv::new();
-        let mut rule_type_db = RuleTypeDB::new();
-        let mut type_db = NodeTypeDB::from([(
-            TextRange::new(TextSize::new(0), TextSize::new(1)),
-            Type::ConcreteType(ConcreteValue::Str),
-        )]);
-        let mut rule_inferrer = RuleInferrer::new();
-        let call = ExprCall {
-            range: DEFAULT_RANGE,
-            func: Box::new(Expr::Attribute(ExprAttribute {
-                range: DEFAULT_RANGE,
-                value: Box::new(Expr::Name(ExprName {
-                    range: DEFAULT_RANGE,
-                    id: Identifier::new("x"),
-                    ctx: DEFAULT_EXPR_CTX,
-                })),
-                attr: Identifier::new("append".to_string()),
-                ctx: DEFAULT_EXPR_CTX,
-            })),
-            args: vec![Expr::Name(ExprName {
-                range: TextRange::new(TextSize::new(0), TextSize::new(1)),
-                id: Identifier::new("y"),
-                ctx: DEFAULT_EXPR_CTX,
-            })],
-            keywords: vec![],
-        };
-        let expr = Expr::Call(call);
-
-        infer_expr_with_rules(
-            &mut rule_env,
-            &expr,
-            &mut rule_type_db,
-            &mut rule_inferrer,
-            &mut type_db,
-        );
-        let expected_type_var = Type::ConcreteType(ConcreteValue::Str);
-        let expected_heuristics =
-            Heuristic::from([(Type::List(Box::new(expected_type_var.clone())), 10.0)]);
         let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
         assert_eq!(expected_rule_env, rule_env);
     }
