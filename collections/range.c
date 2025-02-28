@@ -1,5 +1,4 @@
 #include "range.h"
-#include "iterator.h"
 
 size_t range_len(Range *range)
 {
@@ -63,7 +62,7 @@ void *range_next(void *iter)
 
 Iterator *range_iter(Range *range)
 {
-    Iterator *iter = create_iterator(range, sizeof(word), range->length, range_next);
+    Iterator *iter = create_iterator(range, sizeof(word), range->length, range_next, RangeIter);
     return iter;
 }
 

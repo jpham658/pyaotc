@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
@@ -13,8 +13,8 @@ use rustpython_parser::ast::{
 use crate::astutils::GetReturnStmts;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, build_generic_for_loop_body, build_generic_range_call,
-    handle_global_assignment, store_value,
+    allocate_variable, any_type_to_basic_type, build_generic_for_loop_body,
+    build_generic_range_call, get_list_element_enum, handle_global_assignment, store_value,
 };
 use crate::compiler_utils::to_any_type::ToAnyType;
 
@@ -537,9 +537,126 @@ impl LLVMGenericCodegen for Expr {
 
 impl LLVMGenericCodegen for ExprList {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
-        Err(BackendError {
-            message: "Not implemented yet...",
-        })
+        let llvm_elt_type = compiler.object_type.ptr_type(AddressSpace::default());
+        let llvm_elt_type_size = llvm_elt_type.size_of().as_any_value_enum();
+
+        let llvm_elt_enum_type =
+            match get_list_element_enum(compiler, llvm_elt_type.as_any_type_enum()) {
+                Some(type_enum) => type_enum,
+                None => {
+                    return Err(BackendError {
+                        message: "List element type is not supported.",
+                    })
+                }
+            }
+            .as_any_value_enum();
+
+        let llvm_elts: Vec<_> = self
+            .elts
+            .clone()
+            .into_iter()
+            .map(|elt| elt.generic_codegen(compiler).unwrap())
+            .collect();
+
+        let create_list_fn = compiler
+            .module
+            .get_function("create_list")
+            .expect("create_list is not defined.");
+
+        let list_append_fn = compiler
+            .module
+            .get_function("list_append")
+            .expect("list_append is not defined.");
+
+        let new_list_fn = compiler
+            .module
+            .get_function("new_list")
+            .expect("new_list is not defined.");
+
+        // call create_list
+        let list = compiler
+            .builder
+            .build_call(
+                create_list_fn,
+                &[
+                    compiler
+                        .convert_any_value_to_param_value(llvm_elt_type_size)
+                        .unwrap(),
+                    compiler
+                        .convert_any_value_to_param_value(llvm_elt_enum_type)
+                        .unwrap(),
+                ],
+                "list",
+            )
+            .expect("Could not create list.")
+            .as_any_value_enum();
+
+        let list_as_param = match compiler.convert_any_value_to_param_value(list) {
+            Some(param) => param,
+            None => {
+                return Err(BackendError {
+                    message: "Could not convert list to param.",
+                })
+            }
+        };
+
+        // call append
+        for elt in llvm_elts {
+            let llvm_elt_ptr = compiler
+                .build_gc_malloc_call(llvm_elt_type_size.into_int_value())?
+                .into_pointer_value();
+
+            let typed_elt_ptr = compiler
+                .builder
+                .build_pointer_cast(
+                    llvm_elt_ptr,
+                    llvm_elt_type.ptr_type(AddressSpace::default()),
+                    "typed_elt_ptr",
+                )
+                .unwrap();
+
+            let _ = store_value(compiler, &typed_elt_ptr, &elt)?;
+
+            let void_ptr = compiler
+                .builder
+                .build_pointer_cast(
+                    typed_elt_ptr,
+                    compiler.context.i8_type().ptr_type(AddressSpace::default()),
+                    "void_ptr",
+                )
+                .unwrap();
+
+            let elt_ptr_as_param =
+                match compiler.convert_any_value_to_param_value(void_ptr.as_any_value_enum()) {
+                    Some(param) => param,
+                    None => {
+                        return Err(BackendError {
+                            message: "Could not convert list element pointer to param.",
+                        })
+                    }
+                };
+
+            if let Err(..) =
+                compiler
+                    .builder
+                    .build_call(list_append_fn, &[list_as_param, elt_ptr_as_param], "")
+            {
+                return Err(BackendError {
+                    message: "Could not append element to list.",
+                });
+            }
+        }
+
+        let object_list = compiler
+            .builder
+            .build_call(
+                new_list_fn,
+                &[compiler.convert_any_value_to_param_value(list).unwrap()],
+                "",
+            )
+            .expect("Could not call new_list.");
+
+        Ok(object_list.as_any_value_enum())
     }
 }
 
@@ -769,6 +886,11 @@ impl LLVMGenericCodegen for ExprCall {
             .builder
             .build_call(function, &args, "tmpcall")
             .expect("Could not call function.");
+
+        if func_name.eq("print") {
+            let print_newline_fn = compiler.module.get_function("print_newline").unwrap();
+            let _ = compiler.builder.build_call(print_newline_fn, &[], "");
+        }
 
         Ok(call.as_any_value_enum())
     }

@@ -1,10 +1,10 @@
-use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
+use inkwell::types::{AnyType, AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue, IntValue};
 use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
-    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFor,
+    ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFor,
     StmtFunctionDef, StmtIf, StmtWhile, UnaryOp,
 };
 
@@ -13,12 +13,12 @@ use std::collections::HashMap;
 use crate::astutils::get_iter_type_name;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, build_range_call, build_typed_for_loop_body, handle_global_assignment,
-    is_iterable, store_value,
+    allocate_variable, any_type_to_basic_type, build_range_call, build_typed_for_loop_body,
+    get_list_element_enum, get_llvm_type, handle_global_assignment, is_iterable, store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
-use crate::type_inference::{ConcreteValue, Type, TypeEnv};
+use crate::type_inference::{ConcreteValue, NodeTypeDB, Type, TypeEnv};
 
 use super::error::{BackendError, IRGenResult};
 use super::generic_codegen::LLVMGenericCodegen;
@@ -27,7 +27,7 @@ pub trait LLVMTypedCodegen {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir>;
 }
 
@@ -35,7 +35,7 @@ impl LLVMTypedCodegen for Stmt {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         match self {
             Stmt::Expr(StmtExpr { value, .. }) => value.typed_codegen(compiler, types),
@@ -65,18 +65,17 @@ impl LLVMTypedCodegen for StmtFunctionDef {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
-        // save main entry point
         let main_entry = compiler
             .builder
             .get_insert_block()
             .expect("Builder isn't mapped to a basic block?");
-
         let func_name = self.name.as_str();
+
         let func_type;
-        match types.get(func_name) {
-            Some(scheme) => func_type = scheme.type_name.clone(),
+        match types.get(&self.range) {
+            Some(typ) => func_type = typ.clone(),
             None => {
                 return Err(BackendError {
                     message: "Function {func_name} not typed.",
@@ -91,7 +90,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
         // get argument and return types
         let mut arg_types: Vec<Type> = Vec::new();
         let return_type: Type;
-        match *func_type {
+        match func_type {
             Type::FuncType(func) => {
                 let initial_input = *func.input.clone();
                 // Don't add argument if it has type None (to deal with empty args)
@@ -149,6 +148,12 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 .fn_type(&llvm_arg_types, false),
             Type::ConcreteType(ConcreteValue::None) => {
                 compiler.context.void_type().fn_type(&llvm_arg_types, false)
+            }
+            Type::List(..) => {
+                let list_type = compiler.module.get_struct_type("struct.List").unwrap();
+                list_type
+                    .ptr_type(AddressSpace::default())
+                    .fn_type(&llvm_arg_types, false)
             }
             // TODO: Extend to handle Any cases in the case of ambiguous return types
             _ => {
@@ -258,7 +263,7 @@ impl LLVMTypedCodegen for StmtAssign {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         // TODO: Figure out how to deal with subscripts
         let target_name = match &self.targets[0] {
@@ -284,12 +289,7 @@ impl LLVMTypedCodegen for StmtAssign {
         };
 
         let target_ptr = if compiler.sym_table.is_global_scope() {
-            handle_global_assignment(
-                compiler,
-                &target_name,
-                &Some(typed_value),
-                &generic_value_ptr,
-            )?;
+            handle_global_assignment(compiler, &target_name, &Some(typed_value), &None)?;
             let (g_ptr, _) = compiler
                 .sym_table
                 .resolve_variable(&target_name)
@@ -315,7 +315,7 @@ impl LLVMTypedCodegen for StmtFor {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         let iter = self.iter.typed_codegen(compiler, types)?;
         if !is_iterable(compiler, &iter) {
@@ -335,8 +335,6 @@ impl LLVMTypedCodegen for StmtFor {
         let iter_func_name = format!("{}_iter", iter_type);
         let next_func_name = format!("{}_next", iter_type);
 
-        // TODO: Declare all iter functions in compiler setup, but can dynamically
-        // declare next
         let iter_func = compiler.module.get_function(&iter_func_name).unwrap();
 
         let next_func = match compiler.module.get_function(&next_func_name) {
@@ -380,7 +378,7 @@ impl LLVMTypedCodegen for StmtWhile {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         let curr_block = compiler.builder.get_insert_block().unwrap();
         let while_test = compiler
@@ -491,7 +489,7 @@ impl LLVMTypedCodegen for StmtIf {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         let test = self.test.typed_codegen(compiler, types)?;
         let curr_block = compiler.builder.get_insert_block().unwrap();
@@ -589,7 +587,7 @@ impl LLVMTypedCodegen for Expr {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         match self {
             Expr::BinOp(binop) => binop.typed_codegen(compiler, types),
@@ -599,7 +597,6 @@ impl LLVMTypedCodegen for Expr {
             Expr::BoolOp(boolop) => boolop.typed_codegen(compiler, types),
             Expr::Compare(comp) => comp.typed_codegen(compiler, types),
             Expr::UnaryOp(unop) => unop.typed_codegen(compiler, types),
-            Expr::IfExp(ifexp) => ifexp.typed_codegen(compiler, types),
             Expr::List(list) => list.typed_codegen(compiler, types),
             _ => Err(BackendError {
                 message: "Expression not implemented yet...",
@@ -612,23 +609,130 @@ impl LLVMTypedCodegen for ExprList {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
-        Err(BackendError {
-            message: "List not implemented yet.",
-        })
-    }
-}
+        let elt_typ = match types.get(&self.range) {
+            Some(Type::List(elt_typ)) => elt_typ,
+            _ => {
+                return Err(BackendError {
+                    message: "Type of list is not declared properly.",
+                })
+            }
+        };
 
-impl LLVMTypedCodegen for ExprIfExp {
-    fn typed_codegen<'ctx: 'ir, 'ir>(
-        &self,
-        compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
-    ) -> IRGenResult<'ir> {
-        Err(BackendError {
-            message: "IfExp not implemented yet...",
-        })
+        let llvm_elt_type = get_llvm_type(compiler, &elt_typ).expect("Invalid list element type.");
+        let llvm_elt_type_size = match llvm_elt_type.size_of() {
+            Some(size) => size,
+            None => {
+                return Err(BackendError {
+                    message: "List element type is invalid...",
+                })
+            }
+        }
+        .as_any_value_enum();
+        let llvm_elt_enum_type = match get_list_element_enum(compiler, llvm_elt_type) {
+            Some(type_enum) => type_enum,
+            None => {
+                return Err(BackendError {
+                    message: "List element type is not supported.",
+                })
+            }
+        }
+        .as_any_value_enum();
+
+        let llvm_elts: Vec<_> = self
+            .elts
+            .clone()
+            .into_iter()
+            .map(|elt| elt.typed_codegen(compiler, types).unwrap())
+            .collect();
+
+        let create_list_fn = compiler
+            .module
+            .get_function("create_list")
+            .expect("create_list is not defined.");
+
+        let list_append_fn = compiler
+            .module
+            .get_function("list_append")
+            .expect("list_append is not defined.");
+
+        // call create_list
+        let list = compiler
+            .builder
+            .build_call(
+                create_list_fn,
+                &[
+                    compiler
+                        .convert_any_value_to_param_value(llvm_elt_type_size)
+                        .unwrap(),
+                    compiler
+                        .convert_any_value_to_param_value(llvm_elt_enum_type)
+                        .unwrap(),
+                ],
+                "list",
+            )
+            .expect("Could not create list.")
+            .as_any_value_enum();
+        let list_as_param = match compiler.convert_any_value_to_param_value(list) {
+            Some(param) => param,
+            None => {
+                return Err(BackendError {
+                    message: "Could not convert list to param.",
+                })
+            }
+        };
+
+        // call append
+        for elt in llvm_elts {
+            let llvm_elt_ptr = compiler
+                .build_gc_malloc_call(llvm_elt_type_size.into_int_value())?
+                .into_pointer_value();
+
+            let typed_elt_ptr = compiler
+                .builder
+                .build_pointer_cast(
+                    llvm_elt_ptr,
+                    any_type_to_basic_type(llvm_elt_type)
+                        .unwrap()
+                        .ptr_type(AddressSpace::default()),
+                    "typed_elt_ptr",
+                )
+                .unwrap();
+
+            let _ = store_value(compiler, &typed_elt_ptr, &elt)?;
+
+            let void_ptr = compiler
+                .builder
+                .build_pointer_cast(
+                    typed_elt_ptr,
+                    compiler.context.i8_type().ptr_type(AddressSpace::default()),
+                    "void_ptr",
+                )
+                .unwrap();
+
+            let elt_ptr_as_param =
+                match compiler.convert_any_value_to_param_value(void_ptr.as_any_value_enum()) {
+                    Some(param) => param,
+                    None => {
+                        return Err(BackendError {
+                            message: "Could not convert list element pointer to param.",
+                        })
+                    }
+                };
+
+            if let Err(..) =
+                compiler
+                    .builder
+                    .build_call(list_append_fn, &[list_as_param, elt_ptr_as_param], "")
+            {
+                return Err(BackendError {
+                    message: "Could not append element to list.",
+                });
+            }
+        }
+
+        Ok(list)
     }
 }
 
@@ -636,7 +740,7 @@ impl LLVMTypedCodegen for ExprCompare {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         let mut left = self.left.typed_codegen(compiler, types)?;
         let comparators = self
@@ -737,7 +841,7 @@ impl LLVMTypedCodegen for ExprUnaryOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         let bool_type = compiler.context.bool_type();
         let true_as_u64 = u64::from(true);
@@ -830,7 +934,7 @@ impl LLVMTypedCodegen for ExprBoolOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         let values = self
             .values
@@ -874,7 +978,7 @@ impl LLVMTypedCodegen for ExprCall {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         let func_name = self
             .func
@@ -949,7 +1053,7 @@ impl LLVMTypedCodegen for ExprName {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
@@ -985,7 +1089,7 @@ impl LLVMTypedCodegen for ExprConstant {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         match &self.value {
             Constant::Float(num) => {
@@ -1039,7 +1143,7 @@ impl LLVMTypedCodegen for ExprBinOp {
     fn typed_codegen<'ctx: 'ir, 'ir>(
         &self,
         compiler: &mut Compiler<'ctx>,
-        types: &TypeEnv,
+        types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
         // TODO: Figure out what to do if I have like a result from a generic func and
         // I try to do some operations on it

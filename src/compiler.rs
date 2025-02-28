@@ -1,5 +1,5 @@
 use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, StructType};
-use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
+use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, IntValue};
 use inkwell::AddressSpace;
 use inkwell::{builder::Builder, context::Context, module::Module};
 use rustpython_parser::ast::Stmt;
@@ -12,7 +12,7 @@ use crate::codegen::error::{BackendError, IRGenResult};
 use crate::codegen::generic_codegen::LLVMGenericCodegen;
 use crate::codegen::scope::ScopeManager;
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
-use crate::type_inference::TypeEnv;
+use crate::type_inference::NodeTypeDB;
 
 #[derive(Debug)]
 pub struct Compiler<'ctx> {
@@ -33,23 +33,9 @@ impl<'ctx> Compiler<'ctx> {
 
         let any_type = context.opaque_struct_type("struct.HeapObject");
         let object_type = context.opaque_struct_type("struct.Object");
-        let iterator = context.opaque_struct_type("struct.Iterator");
-        let range = context.opaque_struct_type("struct.Range");
-
-        let void_ptr = context.i8_type().ptr_type(AddressSpace::default()); // void*
-        let size_t = context.i64_type(); // size_t (assuming 64-bit)
-        let func_ptr = void_ptr.ptr_type(AddressSpace::default());
-
-        iterator.set_body(
-            &[
-                void_ptr.into(), // void *data;
-                size_t.into(),   // size_t item_size;
-                size_t.into(),   // size_t length;
-                size_t.into(),   // size_t current;
-                func_ptr.into(), // void *(*next)(void *);
-            ],
-            false,
-        );
+        let _ = context.opaque_struct_type("struct.Iterator");
+        let _ = context.opaque_struct_type("struct.Range");
+        let _ = context.opaque_struct_type("struct.List");
 
         Self {
             context,
@@ -63,7 +49,7 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub fn compile(&mut self, ast: &[Stmt], types: &TypeEnv, file_name: &str) {
+    pub fn compile(&mut self, ast: &[Stmt], type_db: &NodeTypeDB, file_name: &str) {
         let i32_type = self.context.i32_type();
         self.setup_compiler();
 
@@ -74,14 +60,12 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.position_at_end(main_entry);
 
-        // self.setup_tagged_ptr_fns();
-
         // Initialise Boehm GC
         let gc_init = self.module.get_function("GC_init").unwrap();
         let _ = self.builder.build_call(gc_init, &[], "gc_init_call");
 
         for statement in ast {
-            match statement.typed_codegen(self, &types) {
+            match statement.typed_codegen(self, &type_db) {
                 Ok(_ir) => {}
                 Err(e) => {
                     eprintln!("{:?}", e);
@@ -143,7 +127,6 @@ impl<'ctx> Compiler<'ctx> {
         // Collect garbage
         let gc_collect = self.module.get_function("GC_gcollect").unwrap();
         let _ = self.builder.build_call(gc_collect, &[], "gc_collect_call");
-
 
         let _ = self
             .builder
@@ -238,6 +221,8 @@ impl<'ctx> Compiler<'ctx> {
         self.setup_obj_constructors();
         self.setup_print_fns();
         self.setup_gc_fns();
+        self.setup_list_fns();
+        self.setup_range_fns();
         self.setup_iter_fns();
     }
 
@@ -246,6 +231,7 @@ impl<'ctx> Compiler<'ctx> {
      */
     fn setup_obj_constructors(&self) {
         let range = self.module.get_struct_type("struct.Range").unwrap();
+        let list = self.module.get_struct_type("struct.List").unwrap();
         let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
         let obj_fns = HashMap::from([
             ("new_int", self.context.i64_type().as_any_type_enum()),
@@ -261,6 +247,10 @@ impl<'ctx> Compiler<'ctx> {
             (
                 "new_range",
                 range.ptr_type(AddressSpace::default()).as_any_type_enum(),
+            ),
+            (
+                "new_list",
+                list.ptr_type(AddressSpace::default()).as_any_type_enum(),
             ),
         ]);
         for (fn_name, fn_param) in obj_fns {
@@ -278,8 +268,12 @@ impl<'ctx> Compiler<'ctx> {
     fn setup_iter_fns(&self) {
         let iterator = self.module.get_struct_type("struct.Iterator").unwrap();
         let range = self.context.get_struct_type("struct.Range").unwrap();
+        let list = self.context.get_struct_type("struct.List").unwrap();
 
-        let iter_fns = Vec::from([("range", range.ptr_type(AddressSpace::default()))]);
+        let iter_fns = Vec::from([
+            ("range", range.ptr_type(AddressSpace::default())),
+            ("list", list.ptr_type(AddressSpace::default())),
+        ]);
 
         for (fn_name_prefix, fn_param) in iter_fns {
             let fn_type = iterator
@@ -290,11 +284,77 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    pub fn setup_range_fns(&self) {
+        let word_type = self.context.i64_type();
+        let usize_type = self.context.i64_type();
+        let range_type = self
+            .module
+            .get_struct_type("struct.Range")
+            .unwrap()
+            .ptr_type(AddressSpace::default());
+
+        let range_len_fn_type = usize_type.fn_type(&[range_type.into()], false);
+        let create_range_fn_type = range_type.fn_type(
+            &[word_type.into(), word_type.into(), word_type.into()],
+            false,
+        );
+        let range_index_fn_type = word_type.fn_type(
+            &[
+                range_type.into(),
+                word_type.into(),
+                word_type.ptr_type(AddressSpace::default()).into(),
+            ],
+            false,
+        );
+
+        self.module
+            .add_function("range_len", range_len_fn_type, None);
+        self.module
+            .add_function("create_range", create_range_fn_type, None);
+        self.module
+            .add_function("range_index", range_index_fn_type, None);
+    }
+
+    pub fn setup_list_fns(&self) {
+        let void_ptr_type = self
+            .context
+            .i8_type()
+            .ptr_type(inkwell::AddressSpace::default());
+        let usize_type = self.context.i64_type();
+        let list_type = self
+            .module
+            .get_struct_type("struct.List")
+            .unwrap()
+            .ptr_type(AddressSpace::default());
+        let elt_type = self.context.i32_type();
+
+        let create_list_fn_type = list_type.fn_type(&[usize_type.into(), elt_type.into()], false);
+        let list_len_fn_type = usize_type.fn_type(&[list_type.into()], false);
+        let list_index_fn_type =
+            void_ptr_type.fn_type(&[list_type.into(), usize_type.into()], false);
+        let list_set_fn_type = void_ptr_type.fn_type(
+            &[list_type.into(), usize_type.into(), void_ptr_type.into()],
+            false,
+        );
+        let list_append_fn_type =
+            list_type.fn_type(&[list_type.into(), void_ptr_type.into()], false);
+
+        self.module
+            .add_function("create_list", create_list_fn_type, None);
+        self.module.add_function("list_len", list_len_fn_type, None);
+        self.module
+            .add_function("list_index", list_index_fn_type, None);
+        self.module.add_function("list_set", list_set_fn_type, None);
+        self.module
+            .add_function("list_append", list_append_fn_type, None);
+    }
+
     /**
      * Print utils
      */
     fn setup_print_fns(&self) {
         let range = self.context.get_struct_type("struct.Range").unwrap();
+        let list = self.context.get_struct_type("struct.List").unwrap();
         let print_fns = HashMap::from([
             ("print_int", self.context.i64_type().as_any_type_enum()),
             ("print_bool", self.context.bool_type().as_any_type_enum()),
@@ -309,6 +369,10 @@ impl<'ctx> Compiler<'ctx> {
             (
                 "print_range",
                 range.ptr_type(AddressSpace::default()).as_any_type_enum(),
+            ),
+            (
+                "print_list",
+                list.ptr_type(AddressSpace::default()).as_any_type_enum(),
             ),
             (
                 "print_obj",
@@ -343,6 +407,19 @@ impl<'ctx> Compiler<'ctx> {
                 self.context.void_type().fn_type(&params, is_var_args)
             };
             let _ = self.module.add_function(&fn_name, print_fn, None);
+        }
+    }
+
+    pub fn build_gc_malloc_call(&self, size: IntValue<'ctx>) -> IRGenResult<'ctx> {
+        let gc_malloc_fn = self.module.get_function("GC_malloc").unwrap();
+        match self
+            .builder
+            .build_call(gc_malloc_fn, &[BasicMetadataValueEnum::IntValue(size)], "")
+        {
+            Ok(call) => Ok(call.as_any_value_enum()),
+            Err(..) => Err(BackendError {
+                message: "Could not build GC_malloc.",
+            }),
         }
     }
 
@@ -477,21 +554,5 @@ impl<'ctx> Compiler<'ctx> {
             .add_function("GC_get_bytes_since_gc", i64_type.fn_type(&[], false), None);
         self.module
             .add_function("GC_get_total_bytes", i64_type.fn_type(&[], false), None);
-    }
-
-    fn build_gc_malloc_call(&self, size: i64) -> IRGenResult<'_> {
-        let gc_malloc_fn = self.module.get_function("GC_malloc").unwrap();
-        match self.builder.build_call(
-            gc_malloc_fn,
-            &[BasicMetadataValueEnum::IntValue(
-                self.context.i64_type().const_int(size as u64, false),
-            )],
-            "",
-        ) {
-            Ok(call) => Ok(call.as_any_value_enum()),
-            Err(..) => Err(BackendError {
-                message: "Could not build GC_malloc.",
-            }),
-        }
     }
 }

@@ -64,55 +64,52 @@ pub fn infer_stmts_with_rules(
                     type_db,
                 );
 
-                let subscript_value_range = subscript.value.range();
-                match type_db.get(&subscript_value_range) {
-                    Some(Type::Mapping(key, value)) => {
-                        if let Type::ConcreteType(ConcreteValue::Int) = **key {
-                            let inferred_subscript_type = if let Some(heuristic) =
-                                rule_type_db.get(&subscript_value_range)
-                            {
+                let subscript_slice_type = match type_db.get(&subscript.slice.range()) {
+                    Some(typ) => typ.clone(),
+                    None => rule_inferrer.get_new_typevar(),
+                };
+                let subscript_value_type = match type_db.get(&subscript.value.range()) {
+                    Some(typ) => typ.clone(),
+                    None => rule_inferrer.get_new_typevar(),
+                };
+
+                if let Type::Mapping(key, value) = subscript_value_type {
+                    if let Type::ConcreteType(ConcreteValue::Int) = *key {
+                        let inferred_subscript_value_type =
+                            if let Some(heuristic) = rule_type_db.get(&subscript.value.range()) {
                                 &get_most_likely_type(heuristic)
                             } else {
-                                type_db
-                                    .get(&subscript_value_range)
-                                    .expect("All subscript types should be inferred in type inferrence step.")
+                                type_db.get(&subscript.value.range()).expect(
+                                "All subscript types should be inferred in type inferrence step.",
+                            )
                             };
-                            let unified_type = rule_unify_types(&value, &inferred_subscript_type);
+                        let unified_val_type =
+                            rule_unify_types(&value, &inferred_subscript_value_type);
 
-                            rule_inferrer.apply_index_assign_rule(
-                                &subscript.value,
-                                &unified_type,
-                                rule_env,
-                                rule_type_db,
-                            );
-                        } else {
-                            rule_inferrer.apply_key_rule(
-                                &subscript.value,
-                                key,
-                                value,
-                                rule_env,
-                                rule_type_db,
-                            );
-                        }
-                    }
-                    None => {
-                        let typ = rule_inferrer.get_new_typevar();
                         rule_inferrer.apply_index_assign_rule(
                             &subscript.value,
-                            &typ,
+                            &subscript_slice_type,
+                            &unified_val_type,
+                            rule_env,
+                            rule_type_db,
+                        );
+                    } else {
+                        rule_inferrer.apply_key_rule(
+                            &subscript.value,
+                            &key,
+                            &value,
                             rule_env,
                             rule_type_db,
                         );
                     }
-                    _ => {
-                        let typ = rule_inferrer.get_new_typevar();
-                        rule_inferrer.apply_index_assign_rule(
-                            &subscript.value,
-                            &typ,
-                            rule_env,
-                            rule_type_db,
-                        );
-                    }
+                } else {
+                    rule_inferrer.apply_index_assign_rule(
+                        &subscript.value,
+                        &subscript_slice_type,
+                        &subscript_value_type,
+                        rule_env,
+                        rule_type_db,
+                    );
                 }
 
                 if subscript.value.is_subscript_expr() {
@@ -136,7 +133,6 @@ pub fn infer_stmts_with_rules(
                 orelse,
                 ..
             }) => {
-                // TODO: Implement for-in loop rule on iter
                 if let Some(Type::Mapping(key_type, val_type)) = type_db.get(&iter.range()) {
                     rule_inferrer.apply_for_in_stmt_rule(
                         &iter,
@@ -156,6 +152,7 @@ pub fn infer_stmts_with_rules(
                         rule_type_db,
                     );
                 }
+
                 let _ = infer_stmts_with_rules(rule_env, body, rule_type_db, type_db);
                 let _ = infer_stmts_with_rules(rule_env, orelse, rule_type_db, type_db);
             }
@@ -402,7 +399,6 @@ impl RuleInferrer {
     ) {
         let rule = Vec::from([
             (Type::List(Box::new(val_type.clone())), 2.0),
-            (Type::Set(Box::new(val_type.clone())), 2.0),
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::Range, 2.0),
             (
@@ -444,7 +440,6 @@ impl RuleInferrer {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(typ.clone())), 2.0),
-            (Type::Set(Box::new(typ.clone())), 2.0),
             (Type::Range, 2.0),
         ]);
         self.apply_rule(node, &rule, rule_env, rule_type_db);
@@ -526,11 +521,18 @@ impl RuleInferrer {
     pub fn apply_index_assign_rule(
         &mut self,
         node: &Expr,
-        typ: &Type,
+        key_type: &Type,
+        val_type: &Type,
         rule_env: &mut RuleEnv,
         rule_type_db: &mut RuleTypeDB,
     ) {
-        let rule = Vec::from([(Type::List(Box::new(typ.clone())), 3.0)]);
+        let rule = Vec::from([
+            (Type::List(Box::new(val_type.clone())), 3.0),
+            (
+                Type::Mapping(Box::new(key_type.clone()), Box::new(val_type.clone())),
+                2.0,
+            ),
+        ]);
         self.apply_rule(node, &rule, rule_env, rule_type_db);
     }
 

@@ -10,9 +10,10 @@
  * @param item_size The size of the items stored in data
  * @param length The length of data
  * @param next A function to move to the next item in data
+ * @param data_type Type of data being iterated over
  */
 Iterator *create_iterator(void *data, size_t item_size, size_t length,
-                          void *(*next)(void *))
+                          void *(*next)(void *), IteratorType data_type)
 {
     Iterator *iter = (Iterator *)GC_malloc(sizeof(Iterator));
     iter->data = data;
@@ -20,5 +21,6 @@ Iterator *create_iterator(void *data, size_t item_size, size_t length,
     iter->length = length;
     iter->current = 0;
     iter->next = next;
+    iter->data_type = data_type;
     return iter;
 }

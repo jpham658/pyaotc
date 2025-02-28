@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "../collections/range.h"
+#include "../collections/list.h"
 
 #define CHECK_PREDICATE(pred, msg)                                              \
     do                                                                          \
@@ -44,6 +45,7 @@ typedef enum
     Float,
     RangeT,
     IteratorT,
+    ListT,
 } ObjectType;
 
 typedef struct
@@ -55,6 +57,7 @@ typedef struct
         double f_value;
         Range *range;
         Iterator *iter;
+        List *list;
     };
 } HeapObject;
 
@@ -68,15 +71,18 @@ extern bool object_is_str(Object *obj);
 extern bool object_is_float(Object *obj);
 extern bool object_is_range(Object *obj);
 extern bool object_is_iterator(Object *obj);
+extern bool object_is_list(Object *obj);
 
 extern const char *object_as_str(Object *obj);
 extern double object_as_float(Object *obj);
 extern Range *object_as_range(Object *obj);
+extern List *object_as_list(Object *obj);
 
 extern Object *new_str(const char *value);
 extern Object *new_float(double value);
 extern Object *new_range(Range *range);
 extern Object *new_iterator(Iterator *iter);
+extern Object *new_list(List *list);
 
 // Print functions
 extern void print_int(int i);

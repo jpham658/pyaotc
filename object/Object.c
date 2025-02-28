@@ -5,6 +5,7 @@
 #include "object.h"
 #include "gc/gc.h"
 #include "../collections/range.h"
+#include "../collections/list.h"
 
 bool object_is_int(Object *obj)
 {
@@ -86,6 +87,11 @@ bool object_is_iterator(Object *obj)
     return object_type(obj) == IteratorT;
 }
 
+bool object_is_list(Object *obj)
+{
+    return object_type(obj) == ListT;
+}
+
 const char *object_as_str(Object *obj)
 {
     CHECK_PREDICATE(object_is_str(obj), "Invalid string object.");
@@ -102,6 +108,12 @@ Range *object_as_range(Object *obj)
 {
     CHECK_PREDICATE(object_is_range(obj), "Invalid range object.");
     return object_address(obj)->range;
+}
+
+List *object_as_list(Object *obj)
+{
+    CHECK_PREDICATE(object_is_list(obj), "Invalid list object.");
+    return object_address(obj)->list;
 }
 
 Object *new_str(const char *value)
@@ -132,16 +144,24 @@ Object *new_iterator(Iterator *iter)
     return object_from_address(result);
 }
 
+Object *new_list(List *list)
+{
+    HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
+    *result = (HeapObject){.type = ListT, .list = list};
+    return object_from_address(result);
+}
+
 Object *build_range_obj(Object *start, Object *stop, Object *step)
 {
-    if (!object_is_int(start) || !object_is_int(stop) || !object_is_int(step))
+    if ((!object_is_bool(start) && !object_is_int(start)) || (!object_is_bool(stop) && !object_is_int(stop)) || (!object_is_bool(step) && !object_is_int(step)))
     {
         fprintf(stderr, "Invalid arguments for range.\n");
         exit(EXIT_FAILURE);
     }
-    word start_as_int = object_as_int(start);
-    word stop_as_int = object_as_int(stop);
-    word step_as_int = object_as_int(step);
+
+    word start_as_int = object_is_bool(start) ? (word *)object_as_bool(start) : object_as_int(start);
+    word stop_as_int = object_is_bool(stop) ? (word *)object_as_bool(stop) : object_as_int(stop);
+    word step_as_int = object_is_bool(step) ? (word *)object_as_bool(step) : object_as_int(step);
 
     Range *range = create_range(start_as_int, stop_as_int, step_as_int);
     return new_range(range);
@@ -207,6 +227,9 @@ void print_obj(int arg_num, Object *obj, ...)
         case RangeT:
             print_range(object_as_range(curr));
             break;
+        case ListT:
+            print_list(object_as_list(curr));
+            break;
         default:
             print_str(object_as_str(curr));
             break;
@@ -215,7 +238,6 @@ void print_obj(int arg_num, Object *obj, ...)
         curr = va_arg(args, Object *);
     }
     va_end(args);
-    print_newline();
 }
 
 void print_heap_obj(HeapObject *heap_obj)
@@ -248,7 +270,7 @@ bool object_is_iterable(Object *obj)
 
     ObjectType type = object_type(obj);
 
-    return (type == RangeT || type == Str);
+    return (type == RangeT || type == Str || type == ListT);
 }
 
 Iterator *object_as_iterator(Object *obj)
@@ -268,6 +290,12 @@ Object *object_into_iterator(Object *obj)
         Iterator *range_as_iter = range_iter(range);
         return new_iterator(range_as_iter);
     }
+    case ListT:
+    {
+        List *list = object_as_list(obj);
+        Iterator *list_as_iter = list_iter(list);
+        return new_iterator(list_as_iter);
+    }
     default:
     {
         // TODO: if we get here, it means that all possible types are exhausted, so we
@@ -284,7 +312,9 @@ Object *object_next(Object *obj)
     Iterator *obj_iter = object_as_iterator(obj);
 
     // case for range
-    if (obj_iter->item_size == sizeof(word))
+    switch (obj_iter->data_type)
+    {
+    case RangeIter:
     {
         word *next_range_val = obj_iter->next(obj_iter);
         if (next_range_val == NULL)
@@ -295,9 +325,22 @@ Object *object_next(Object *obj)
         {
             return new_int(*next_range_val);
         }
+        break;
     }
-    else
+    case ListIter:
     {
-        return (Object *)obj_iter->next(obj_iter);
+        Object **next_obj_val = (Object **)obj_iter->next(obj_iter);
+        if (next_obj_val == NULL)
+        {
+            return NULL;
+        }
+        else
+        {
+            return *next_obj_val;
+        }
+        break;
+    }
+    default:
+        return obj;
     }
 }

@@ -8,6 +8,12 @@
 
 typedef intptr_t word;
 
+typedef enum
+{
+    RangeIter,
+    ListIter
+} IteratorType;
+
 typedef struct
 {
     void *data;
@@ -15,9 +21,10 @@ typedef struct
     size_t length;
     size_t current;
     void *(*next)(void *);
+    IteratorType data_type;
 } Iterator;
 
 extern Iterator *create_iterator(void *data, size_t item_size, size_t length,
-                                 void *(*next)(void *));
+                                 void *(*next)(void *), IteratorType data_type);
 
 #endif

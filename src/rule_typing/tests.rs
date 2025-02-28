@@ -358,7 +358,6 @@ mod infer_expr_with_rules_tests {
         let expected_heuristics = Heuristic::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(expected_type_var.clone())), 2.0),
-            (Type::Set(Box::new(expected_type_var.clone())), 2.0),
             (Type::Range, 2.0),
         ]);
         let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);

@@ -2,7 +2,7 @@ use rustpython_parser::ast::{
     Expr, ExprSubscript, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
 };
 
-use crate::type_inference::{Scheme, Type, TypeEnv};
+use crate::type_inference::{NodeTypeDB, Scheme, Type, TypeEnv};
 
 pub fn print_ast(ast: &[Stmt]) {
     for node in ast {
@@ -12,13 +12,11 @@ pub fn print_ast(ast: &[Stmt]) {
 /**
  * Get type name of the given node
  */
-pub fn get_iter_type_name(node: &Expr, types: &TypeEnv) -> String {
+pub fn get_iter_type_name(node: &Expr, types: &NodeTypeDB) -> String {
     // check if node is a name
     if let Some(name) = node.as_name_expr() {
-        let name_str = name.id.as_str();
-        let type_name = match types.get(name_str) {
-            Some(Scheme { type_name, .. }) => match **type_name {
-                Type::Set(..) => "set",
+        let type_name = match types.get(&name.range) {
+            Some(typ) => match typ {
                 Type::Range => "range",
                 Type::List(..) => "list",
                 Type::Mapping(_, _) => "dict",

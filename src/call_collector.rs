@@ -143,7 +143,13 @@ impl Visitor for FunctionCallCollector {
         let arg_types = call
             .args
             .iter()
-            .map(|arg| self.type_db.get(&arg.range()).unwrap().clone())
+            .map(|arg| {
+                println!("at node {:?}", &arg.range());
+                match self.type_db.get(&arg.range()).unwrap().clone() {
+                    Type::Scheme(scheme) => *scheme.type_name.clone(),
+                    typ => typ,
+                }
+            })
             .collect();
 
         self.call_stat_tracker

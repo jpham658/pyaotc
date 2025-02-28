@@ -1,8 +1,9 @@
 use inkwell::{
-    types::{AnyType, AnyTypeEnum, BasicType, PointerType},
-    values::{AnyValue, AnyValueEnum, FunctionValue, PointerValue},
+    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, PointerType},
+    values::{AnyValue, AnyValueEnum, FunctionValue, IntValue, PointerValue},
     AddressSpace,
 };
+use rustpython_ast::Ranged;
 use rustpython_parser::ast::{Expr, Stmt};
 
 use crate::{
@@ -12,14 +13,113 @@ use crate::{
         typed_codegen::LLVMTypedCodegen,
     },
     compiler::Compiler,
-    type_inference::TypeEnv,
+    type_inference::{ConcreteValue, NodeTypeDB, Type},
 };
+
+/**
+ * Convert AnyTypeEnum to BasicTypeEnum
+ */
+pub fn any_type_to_basic_type<'ctx>(any_type: AnyTypeEnum<'ctx>) -> Option<BasicTypeEnum<'ctx>> {
+    match any_type {
+        AnyTypeEnum::ArrayType(ty) => Some(ty.into()),
+        AnyTypeEnum::FloatType(ty) => Some(ty.into()),
+        AnyTypeEnum::IntType(ty) => Some(ty.into()),
+        AnyTypeEnum::PointerType(ty) => Some(ty.into()),
+        AnyTypeEnum::StructType(ty) => Some(ty.into()),
+        AnyTypeEnum::VectorType(ty) => Some(ty.into()),
+        _ => None, // Some types like VoidType can't be converted to BasicTypeEnum
+    }
+}
+
+/**
+ * Helper to get enum of a list's element type
+ */
+pub fn get_list_element_enum<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    llvm_type: AnyTypeEnum<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let bool_type = compiler.context.bool_type();
+    let str_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+    let list_type = compiler.module.get_struct_type("struct.List").unwrap();
+    let range_type = compiler.module.get_struct_type("struct.Range").unwrap();
+
+    let enum_type = compiler.context.i32_type();
+
+    if llvm_type.is_int_type() {
+        if llvm_type.into_int_type() == bool_type {
+            return Some(enum_type.const_int(1, false));
+        }
+        return Some(enum_type.const_int(0, false));
+    }
+
+    if llvm_type.is_float_type() {
+        return Some(enum_type.const_int(2, false));
+    }
+
+    if llvm_type.is_pointer_type() {
+        let llvm_type_as_ptr = llvm_type.into_pointer_type();
+        if llvm_type_as_ptr == str_type {
+            return Some(enum_type.const_int(3, false));
+        } else if llvm_type_as_ptr == list_type.ptr_type(AddressSpace::default()) {
+            println!("element type is list");
+            return Some(enum_type.const_int(5, false));
+        } else if llvm_type_as_ptr == range_type.ptr_type(AddressSpace::default()) {
+            return Some(enum_type.const_int(6, false));
+        } else {
+            return Some(enum_type.const_int(4, false));
+        }
+    }
+
+    None
+}
+
+/**
+ * Helper mapping types to their corresponding LLVM type
+ */
+pub fn get_llvm_type<'ctx>(compiler: &mut Compiler<'ctx>, typ: &Type) -> Option<AnyTypeEnum<'ctx>> {
+    match typ {
+        Type::ConcreteType(ConcreteValue::Int) => {
+            Some(compiler.context.i64_type().as_any_type_enum())
+        }
+        Type::ConcreteType(ConcreteValue::Bool) => {
+            Some(compiler.context.bool_type().as_any_type_enum())
+        }
+        Type::ConcreteType(ConcreteValue::Str) => Some(
+            compiler
+                .context
+                .i8_type()
+                .ptr_type(AddressSpace::default())
+                .as_any_type_enum(),
+        ),
+        Type::ConcreteType(ConcreteValue::Float) => {
+            Some(compiler.context.f64_type().as_any_type_enum())
+        }
+        Type::List(..) => Some(
+            compiler
+                .module
+                .get_struct_type("struct.List")
+                .unwrap()
+                .ptr_type(AddressSpace::default())
+                .as_any_type_enum(),
+        ),
+        Type::Range => Some(
+            compiler
+                .module
+                .get_struct_type("struct.Range")
+                .unwrap()
+                .ptr_type(AddressSpace::default())
+                .as_any_type_enum(),
+        ),
+        _ => None,
+    }
+}
 
 /**
  * Helper to check if a value is iterable
  */
 pub fn is_iterable<'ctx>(compiler: &mut Compiler<'ctx>, value: &AnyValueEnum<'ctx>) -> bool {
     let range_type = compiler.module.get_struct_type("struct.Range").unwrap();
+    let list_type = compiler.module.get_struct_type("struct.List").unwrap();
     let iter_type = compiler.module.get_struct_type("struct.Iterator").unwrap();
     let str_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
 
@@ -29,10 +129,9 @@ pub fn is_iterable<'ctx>(compiler: &mut Compiler<'ctx>, value: &AnyValueEnum<'ct
 
     let val_ptr_type = value.get_type().into_pointer_type();
 
-    println!("{:?}", val_ptr_type);
-
     return val_ptr_type == range_type.ptr_type(AddressSpace::default())
         || val_ptr_type == iter_type.ptr_type(AddressSpace::default())
+        || val_ptr_type == list_type.ptr_type(AddressSpace::default())
         || val_ptr_type == str_type;
 }
 
@@ -214,27 +313,6 @@ pub fn build_range_call<'ctx>(
 }
 
 /**
- * Helper to get element pointer type of an Iterator
- */
-pub fn get_elt_ptr_size_of_iter<'ctx>(
-    compiler: &mut Compiler<'ctx>,
-    iter_ptr: PointerValue<'ctx>,
-) -> Option<PointerType<'ctx>> {
-    let iter_type = compiler.module.get_struct_type("struct.Iterator").unwrap();
-    let iter_ptr_type = iter_type.ptr_type(AddressSpace::default());
-    if iter_ptr.get_type() != iter_ptr_type {
-        return None;
-    }
-    match compiler.builder.build_struct_gep(iter_ptr, 1, "elt_type") {
-        Ok(typ) => Some(typ.get_type()),
-        Err(..) => {
-            eprintln!("Error building GEP");
-            None
-        }
-    }
-}
-
-/**
  * Helper to build for loop body for generic codegen
  */
 pub fn build_generic_for_loop_body<'ctx>(
@@ -295,7 +373,7 @@ pub fn build_generic_for_loop_body<'ctx>(
         .build_call(next_func, &[iter_ptr_as_param.into()], "next_val")
         .expect("Could not increment iterator.")
         .as_any_value_enum();
-    
+
     let target_ptr = allocate_variable(compiler, target_name, &next_value.as_any_value_enum())?;
     let _ = compiler.builder.build_store(
         target_ptr.into_pointer_value(),
@@ -346,16 +424,9 @@ pub fn build_iter_increment<'ctx>(
     compiler: &mut Compiler<'ctx>,
     iter_ptr: PointerValue<'ctx>,
     next_func: FunctionValue<'ctx>,
+    target_type: BasicTypeEnum<'ctx>,
 ) -> IRGenResult<'ctx> {
     let void_ptr_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
-    let elt_ptr_type = match get_elt_ptr_size_of_iter(compiler, iter_ptr) {
-        Some(typ) => typ,
-        None => {
-            return Err(BackendError {
-                message: "Could not get element type of iterator.",
-            })
-        }
-    };
 
     let iter_as_void_ptr = compiler
         .builder
@@ -371,9 +442,11 @@ pub fn build_iter_increment<'ctx>(
         .unwrap()
         .into_pointer_value();
 
+    let target_ptr_type = target_type.ptr_type(AddressSpace::default());
+
     let next_value_as_elt = compiler
         .builder
-        .build_pointer_cast(next_value, elt_ptr_type, "next_as_elt_ptr")
+        .build_pointer_cast(next_value, target_ptr_type, "next_as_elt_ptr")
         .expect("Could not cast target to element type.");
 
     Ok(next_value_as_elt.as_any_value_enum())
@@ -384,7 +457,7 @@ pub fn build_iter_increment<'ctx>(
  */
 pub fn build_typed_for_loop_body<'ctx>(
     compiler: &mut Compiler<'ctx>,
-    types: &TypeEnv,
+    type_db: &NodeTypeDB,
     iter_ptr: PointerValue<'ctx>,
     next_func: FunctionValue<'ctx>,
     target: &Expr,
@@ -432,7 +505,16 @@ pub fn build_typed_for_loop_body<'ctx>(
 
     // loop_cond
     compiler.builder.position_at_end(loop_cond_block);
-    let target = build_iter_increment(compiler, iter_ptr, next_func)?.into_pointer_value();
+    let target_type = if let Some(typ) = type_db.get(&target.range()) {
+        let type_as_any_enum = get_llvm_type(compiler, typ).expect("Invalid target type.");
+        any_type_to_basic_type(type_as_any_enum).expect("Invalid target type.")
+    } else {
+        return Err(BackendError {
+            message: "Target type is not defined.",
+        });
+    };
+    let target =
+        build_iter_increment(compiler, iter_ptr, next_func, target_type)?.into_pointer_value();
     compiler
         .sym_table
         .add_variable(target_name, Some(target.as_any_value_enum()), None);
@@ -447,7 +529,7 @@ pub fn build_typed_for_loop_body<'ctx>(
     // loop_body
     compiler.builder.position_at_end(loop_body_block);
     for stmt in body {
-        stmt.typed_codegen(compiler, &types)?;
+        stmt.typed_codegen(compiler, &type_db)?;
     }
 
     let _ = compiler.builder.build_unconditional_branch(loop_cond_block);
@@ -456,7 +538,7 @@ pub fn build_typed_for_loop_body<'ctx>(
     if orelse.len() > 0 {
         compiler.builder.position_at_end(loop_orelse_block);
         for stmt in orelse {
-            stmt.typed_codegen(compiler, &types)?;
+            stmt.typed_codegen(compiler, &type_db)?;
         }
         let _ = compiler.builder.build_unconditional_branch(loop_end_block);
     }

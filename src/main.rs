@@ -17,7 +17,7 @@ use rustpython_parser::{
     Parse,
 };
 use std::{env, fs, path::Path};
-use type_inference::{infer_ast_types, NodeTypeDB, TypeEnv, TypeInferrer};
+use type_inference::{infer_stmts, NodeTypeDB, TypeEnv, TypeInferrer};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -27,7 +27,7 @@ fn main() {
     let python_source_path = if args.len() > 1 {
         &args[1]
     } else {
-        "test.py"
+        "examples/num_islands.py"
     };
     let python_source = fs::read_to_string(python_source_path)
         .expect(format!("Could not read file {}", &python_source_path).as_str());
@@ -57,13 +57,15 @@ fn main() {
         Ok(ast) => {
             print_ast(&ast);
             // normal type inferrence
-            infer_ast_types(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
+            infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
             println!("type db {:?}", type_db);
+            println!("type env {:?}", type_env);
 
-            let mut call_collector = FunctionCallCollector::new(&type_db);
-            call_collector.collect_calls(&ast);
-            println!("{:?}", call_collector.most_common_arg_types());
-            // compiler.compile(&ast, &type_env, file_name);
+            // let mut call_collector = FunctionCallCollector::new(&type_db);
+            // call_collector.collect_calls(&ast);
+            // println!("{:?}", call_collector.most_common_arg_types());
+
+            compiler.compile(&ast, &type_db, file_name);
             // compiler.compile_generically(&ast, file_name);
         }
         Err(e) => {
