@@ -290,7 +290,12 @@ impl LLVMTypedCodegen for StmtAssign {
         };
 
         let target_ptr = if compiler.sym_table.is_global_scope() {
-            handle_global_assignment(compiler, &target_name, &Some(typed_value), &None)?;
+            handle_global_assignment(
+                compiler,
+                &target_name,
+                &Some(typed_value),
+                &generic_value_ptr,
+            )?;
             let (g_ptr, _) = compiler
                 .sym_table
                 .resolve_variable(&target_name)

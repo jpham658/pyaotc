@@ -401,8 +401,6 @@ impl TypeInferrer {
             apply_to_type_db(&subs, type_db);
         }
 
-        println!("extended env -> {:?}", extended_env);
-
         // infer with rules too
         if let Err(e) =
             infer_stmts_with_rules(&mut rule_env, &func.body, &mut rule_type_db, type_db)
@@ -425,7 +423,6 @@ impl TypeInferrer {
         }
 
         extended_env = apply_to_type_env(&subs, &mut extended_env);
-        println!("extended env -> {:?}", extended_env);
 
         // inferring function body again
         for stmt in &func.body {
@@ -546,8 +543,6 @@ impl TypeInferrer {
                 let mut new_env = apply_to_type_env(&sub_left, env);
                 let (sub_right, right_type) =
                     self.infer_expression(&mut new_env, &binop.right, type_db)?;
-
-                println!("left type: {:?}, right type: {:?}", left_type, right_type);
 
                 let mut composite_subs = compose_subs(&sub_left, &sub_right);
                 let resultant_type = match (left_type, right_type) {
