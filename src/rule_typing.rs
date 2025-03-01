@@ -2,13 +2,17 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use rustpython_ast::ExprSubscript;
 use rustpython_parser::{
     ast::{Expr, Ranged, Stmt, StmtAssign, StmtExpr, StmtFor, StmtIf, StmtWhile},
     text_size::TextRange,
 };
 
-use crate::type_inference::{
-    ConcreteValue, FreshVariableGenerator, NodeTypeDB, Scheme, Type, TypeEnv, TypeVar,
+use crate::{
+    astutils::serialise_subscript,
+    type_inference::{
+        ConcreteValue, FreshVariableGenerator, NodeTypeDB, Scheme, Type, TypeEnv, TypeVar,
+    },
 };
 
 pub type Heuristic = HashMap<Type, f32>;
@@ -50,11 +54,39 @@ pub fn infer_stmts_with_rules(
                 }
             }
             Stmt::Assign(StmtAssign { targets, .. }) => {
+                // get subscript value's string -> if it's a nested subscript,
+                // we'll get something like x[][]
+                // infer type and add to rule checker,
+                // remove rule type db! i don't think we'll need it anymore
+
+                // if the root is not a name, we just ignore (so some sort of
+                // recursive check... astutils time...!!)
+
                 if !targets[0].is_subscript_expr() {
                     continue;
                 }
 
                 let subscript = targets[0].as_subscript_expr().unwrap();
+
+                let subscript_string = serialise_subscript(&subscript);
+                let value_string = if let Some(val_subscript) = subscript.value.as_subscript_expr()
+                {
+                    serialise_subscript(val_subscript)
+                } else if let Some(val_name) = subscript.value.as_name_expr() {
+                    val_name.id.as_str().to_string()
+                } else {
+                    continue;
+                };
+
+                let slice_type = type_db
+                    .get(&subscript.slice.range())
+                    .cloned()
+                    .unwrap_or_else(|| rule_inferrer.get_new_typevar());
+
+                let subscript_type = type_db
+                    .get(&subscript.range())
+                    .cloned()
+                    .unwrap_or_else(|| rule_inferrer.get_new_typevar());
 
                 infer_expr_with_rules(
                     rule_env,
@@ -64,56 +96,32 @@ pub fn infer_stmts_with_rules(
                     type_db,
                 );
 
-                let subscript_slice_type = match type_db.get(&subscript.slice.range()) {
-                    Some(typ) => typ.clone(),
-                    None => rule_inferrer.get_new_typevar(),
-                };
-                let subscript_value_type = match type_db.get(&subscript.value.range()) {
-                    Some(typ) => typ.clone(),
-                    None => rule_inferrer.get_new_typevar(),
-                };
-
-                if let Type::Mapping(key, value) = subscript_value_type {
-                    if let Type::ConcreteType(ConcreteValue::Int) = *key {
-                        let inferred_subscript_value_type =
-                            if let Some(heuristic) = rule_type_db.get(&subscript.value.range()) {
-                                &get_most_likely_type(heuristic)
-                            } else {
-                                type_db.get(&subscript.value.range()).expect(
-                                "All subscript types should be inferred in type inferrence step.",
-                            )
-                            };
-                        let unified_val_type =
-                            rule_unify_types(&value, &inferred_subscript_value_type);
-
-                        rule_inferrer.apply_index_assign_rule(
-                            &subscript.value,
-                            &subscript_slice_type,
-                            &unified_val_type,
+                match slice_type {
+                    Type::ConcreteType(ConcreteValue::Int) => rule_inferrer
+                        .apply_index_assign_rule(
+                            &value_string,
+                            &slice_type,
+                            &subscript_type,
                             rule_env,
                             rule_type_db,
-                        );
-                    } else {
-                        rule_inferrer.apply_key_rule(
-                            &subscript.value,
-                            &key,
-                            &value,
-                            rule_env,
-                            rule_type_db,
-                        );
-                    }
-                } else {
-                    rule_inferrer.apply_index_assign_rule(
-                        &subscript.value,
-                        &subscript_slice_type,
-                        &subscript_value_type,
+                        ),
+                    _ => rule_inferrer.apply_key_rule(
+                        &value_string,
+                        &slice_type,
+                        &subscript_type,
                         rule_env,
                         rule_type_db,
-                    );
+                    ),
                 }
 
-                if subscript.value.is_subscript_expr() {
-                    remove_str_from_heuristic(&subscript.value, rule_env, rule_type_db);
+                if let Some(val_subscript) = subscript.value.as_subscript_expr() {
+                    let types_to_be_removed =
+                        Vec::from([Type::ConcreteType(ConcreteValue::Str), Type::Range]);
+                    remove_types_from_subscript_heuristic(
+                        &val_subscript,
+                        rule_env,
+                        &types_to_be_removed,
+                    );
                 }
             }
             Stmt::If(StmtIf {
@@ -133,19 +141,12 @@ pub fn infer_stmts_with_rules(
                 orelse,
                 ..
             }) => {
-                if let Some(Type::Mapping(key_type, val_type)) = type_db.get(&iter.range()) {
-                    rule_inferrer.apply_for_in_stmt_rule(
-                        &iter,
-                        key_type,
-                        val_type,
-                        rule_env,
-                        rule_type_db,
-                    );
-                } else {
+                let iter_string = get_node_string(iter);
+                if !iter_string.is_empty() {
                     let key_type = rule_inferrer.get_new_typevar();
                     let val_type = rule_inferrer.get_new_typevar();
                     rule_inferrer.apply_for_in_stmt_rule(
-                        &iter,
+                        &iter_string,
                         &key_type,
                         &val_type,
                         rule_env,
@@ -179,82 +180,111 @@ fn infer_expr_with_rules(
                 return;
             }
 
-            if let Some(attr) = call.func.as_attribute_expr() {
-                if !attr.value.is_name_expr() {
+            if let Some(name) = call.func.as_name_expr() {
+                let func_name = name.id.as_str();
+                let typevar = rule_inferrer.get_new_typevar();
+                if !func_name.eq("len") || call.args.len() == 0 {
                     return;
                 }
 
-                let value = &attr.value;
-                let attr_name = attr.attr.as_str();
-
-                if attr_name.eq("clear") || attr_name.eq("copy") {
-                    let typevar = rule_inferrer.get_new_typevar();
-                    rule_inferrer.apply_list_operation_rule(
-                        value,
-                        &typevar,
-                        rule_env,
-                        rule_type_db,
-                    );
+                let arg = call.args.get(0);
+                if let Some(v) = arg {
+                    let arg_name = get_node_string(v);
+                    if arg_name.is_empty() {
+                        return;
+                    }
+                    rule_inferrer.apply_len_rule(&arg_name, &typevar, rule_env, rule_type_db);
                 }
-
                 return;
             }
 
-            let func_name = call.func.as_name_expr().unwrap().id.as_str();
-            let typevar = rule_inferrer.get_new_typevar();
-            if func_name.eq("len") && call.args.len() == 1 {
-                let arg = call.args.get(0);
-                if let Some(v) = arg {
-                    rule_inferrer.apply_len_rule(&v, &typevar, rule_env, rule_type_db);
-                }
+            let attr = call.func.as_attribute_expr().unwrap();
+            if !attr.value.is_name_expr() {
+                return;
             }
+
+            let value = &attr.value;
+            let attr_name = attr.attr.as_str();
+
+            let value_string = get_node_string(value);
+
+            if value_string.is_empty() {
+                return;
+            }
+
+            if attr_name.eq("clear") || attr_name.eq("copy") {
+                let typevar = rule_inferrer.get_new_typevar();
+                rule_inferrer.apply_list_operation_rule(
+                    &value_string,
+                    &typevar,
+                    rule_env,
+                    rule_type_db,
+                );
+            }
+
+            return;
         }
         Expr::Subscript(subscript) => {
-            // infer type of value
-            let value = &*subscript.value;
-            infer_expr_with_rules(rule_env, value, rule_type_db, rule_inferrer, type_db);
+            // make sure to infer type of value too!
+            infer_expr_with_rules(
+                rule_env,
+                &subscript.value,
+                rule_type_db,
+                rule_inferrer,
+                type_db,
+            );
 
-            let typ = if let Some(heuristic) = rule_type_db.get(&value.range()) {
-                &get_most_likely_type(heuristic)
-            } else {
-                let typ = type_db
-                    .get(&value.range())
-                    .expect("All subscript types should be inferred in type inferrence step.");
-                match typ {
-                    Type::Mapping(key, value)
-                        if **key == Type::ConcreteType(ConcreteValue::Int) =>
-                    {
-                        &rule_unify_types(typ, &Type::List(value.clone()))
-                    }
-                    _ => &typ,
-                }
-            };
+            let value_string = get_node_string(&subscript.value);
 
-            if let Type::Mapping(key_type, val_type) = typ {
-                if let Type::ConcreteType(ConcreteValue::Int) = **key_type {
-                    match **val_type {
-                        Type::ConcreteType(ConcreteValue::Str) | Type::TypeVar(..) | Type::Any => {
-                            rule_inferrer.apply_index_rule(value, &val_type, rule_env, rule_type_db)
-                        }
-                        Type::ConcreteType(ConcreteValue::Int) => rule_inferrer
-                            .apply_index_with_int_value(value, &val_type, rule_env, rule_type_db),
-                        _ => rule_inferrer.apply_index_with_non_int_or_str_value(
-                            value,
-                            &val_type,
-                            rule_env,
-                            rule_type_db,
-                        ),
-                    }
-                } else {
-                    rule_inferrer.apply_key_rule(value, key_type, val_type, rule_env, rule_type_db);
-                }
+            if value_string.is_empty() {
+                return;
+            }
+
+            let slice_type = type_db
+                .get(&subscript.slice.range())
+                .cloned()
+                .unwrap_or_else(|| rule_inferrer.get_new_typevar());
+
+            let subscript_type = type_db
+                .get(&subscript.range())
+                .cloned()
+                .unwrap_or_else(|| rule_inferrer.get_new_typevar());
+
+            if let Type::ConcreteType(ConcreteValue::Int) = slice_type {
+                rule_inferrer.apply_index_rule(
+                    &value_string,
+                    &subscript_type,
+                    rule_env,
+                    rule_type_db,
+                );
             } else {
-                let val_type = rule_inferrer.get_new_typevar();
-                rule_inferrer.apply_index_rule(value, &val_type, rule_env, rule_type_db);
+                rule_inferrer.apply_key_rule(
+                    &value_string,
+                    &slice_type,
+                    &subscript_type,
+                    rule_env,
+                    rule_type_db,
+                );
+            }
+
+            if subscript.value.is_subscript_expr() {
+                let types_to_be_removed =
+                    Vec::from([Type::ConcreteType(ConcreteValue::Str), Type::Range]);
+                remove_types_from_subscript_heuristic(&subscript, rule_env, &types_to_be_removed);
+            }
+        }
+        Expr::BoolOp(boolop) => {
+            for val in &boolop.values {
+                infer_expr_with_rules(rule_env, val, rule_type_db, rule_inferrer, type_db);
             }
         }
         Expr::Compare(comp) => {
             // TODO: Implement `i in x` rule => x should be iterable with elt type i
+            // if operator == In(), apply in rule
+            infer_expr_with_rules(rule_env, &comp.left, rule_type_db, rule_inferrer, type_db);
+            for comparator in &comp.comparators {
+                infer_expr_with_rules(rule_env, &comparator, rule_type_db, rule_inferrer, type_db);
+            }
         }
         _ => {}
     }
@@ -275,15 +305,6 @@ pub fn get_inferred_rule_types(rule_env: &mut RuleEnv) -> TypeEnv {
     type_env
 }
 
-pub fn get_inferred_rule_type_db(rule_type_db: &mut RuleTypeDB) -> NodeTypeDB {
-    let mut type_db = NodeTypeDB::new();
-    for (range, heuristic) in rule_type_db {
-        let most_likely_type = get_most_likely_type(heuristic);
-        type_db.insert(range.clone(), most_likely_type);
-    }
-    type_db
-}
-
 fn get_most_likely_type(heuristic: &Heuristic) -> Type {
     let mut sorted_heuristics = heuristic.iter().collect::<Vec<(_, _)>>();
     sorted_heuristics.sort_by(|(t1, v1), (t2, v2)| {
@@ -294,13 +315,59 @@ fn get_most_likely_type(heuristic: &Heuristic) -> Type {
     sorted_heuristics[0].0.clone() // get type from tuple form of Heuristic (Type, f32)
 }
 
+/**
+ * Checks type order, making sure to prefer concrete types
+ * over types defined with type variables defined as placeholders
+ * in the rule inferrer.
+ */
 fn type_order(typ: &Type) -> i32 {
     match typ {
-        Type::Mapping(..) => 1,
-        Type::ConcreteType(ConcreteValue::Str) => 2,
-        Type::List(..) => 3,
+        Type::ConcreteType(ConcreteValue::Str) => 1,
+        Type::Mapping(key_type, val_type) => {
+            if !contains_rule_generated_typevar(key_type)
+                && !contains_rule_generated_typevar(val_type)
+            {
+                2
+            } else {
+                3
+            }
+        }
+        Type::List(elt_type) => {
+            if !contains_rule_generated_typevar(elt_type) {
+                3
+            } else {
+                4
+            }
+        }
         Type::Range => 4,
         _ => 0,
+    }
+}
+
+fn contains_rule_generated_typevar(typ: &Type) -> bool {
+    match typ {
+        Type::TypeVar(TypeVar(name)) => is_rule_generated(name),
+        Type::List(elt_type) => contains_rule_generated_typevar(elt_type),
+        Type::Mapping(key_type, value_type) => {
+            contains_rule_generated_typevar(key_type) || contains_rule_generated_typevar(value_type)
+        }
+        _ => false,
+    }
+}
+
+fn is_rule_generated(name: &str) -> bool {
+    name.starts_with("r") // TODO: Fix to be more general
+}
+
+/**
+ * Helper to get the string for either a name or a subscript node.
+ * We should ignore any other type of node.
+ */
+fn get_node_string(node: &Expr) -> String {
+    match node {
+        Expr::Subscript(subscript) => serialise_subscript(subscript),
+        Expr::Name(name) => name.id.as_str().to_string(),
+        _ => "".to_string(),
     }
 }
 
@@ -347,29 +414,43 @@ pub fn rule_unify_types(expected: &Type, inferred: &Type) -> Type {
 }
 
 /**
- * Used only when we want to tank the string type prediction
+ * Helper to tank string type prediction on every level of the subscript.
  */
-pub fn remove_str_from_heuristic(
-    node: &Expr,
+pub fn remove_types_from_subscript_heuristic(
+    subscript: &ExprSubscript,
     rule_env: &mut RuleEnv,
-    rule_type_db: &mut RuleTypeDB,
+    types: &[Type],
 ) {
-    let string_type = Type::ConcreteType(ConcreteValue::Str);
-    if let Some(name) = node.as_name_expr() {
-        let id = name.id.as_str();
-        let heuristic = rule_env.get_mut(id).unwrap();
-        if heuristic.contains_key(&string_type) {
-            heuristic.remove(&string_type);
-        }
+    if !subscript.value.is_name_expr() && !subscript.value.is_subscript_expr() {
+        return;
     }
 
-    if let Some(subscript) = node.as_subscript_expr() {
-        let heuristic = rule_type_db.get_mut(&subscript.range()).unwrap();
-        if heuristic.contains_key(&string_type) {
-            heuristic.remove(&string_type);
-        }
-        // recurse to remove string from all parent levels of the subscript
-        remove_str_from_heuristic(&subscript.value, rule_env, rule_type_db);
+    for typ in types {
+        remove_type_from_heuristic(&subscript.value, rule_env, typ);
+    }
+
+    if subscript.value.is_name_expr() {
+        return;
+    }
+
+    let val_as_subscript = subscript.value.as_subscript_expr().unwrap();
+    remove_types_from_subscript_heuristic(val_as_subscript, rule_env, types);
+}
+
+/**
+ * Used only when we want to tank a type prediction e.g. for multi dimensional
+ * subscripts, we should remove the string and range predictions
+ */
+pub fn remove_type_from_heuristic(node: &Expr, rule_env: &mut RuleEnv, type_to_remove: &Type) {
+    let node_name = get_node_string(node);
+
+    if node_name.is_empty() {
+        return;
+    }
+
+    let heuristic = rule_env.get_mut(&node_name).unwrap();
+    if heuristic.contains_key(&type_to_remove) {
+        heuristic.remove(&type_to_remove);
     }
 }
 
@@ -391,7 +472,7 @@ impl RuleInferrer {
 
     pub fn apply_for_in_stmt_rule(
         &mut self,
-        node: &Expr,
+        node: &str,
         key_type: &Type,
         val_type: &Type,
         rule_env: &mut RuleEnv,
@@ -401,10 +482,6 @@ impl RuleInferrer {
             (Type::List(Box::new(val_type.clone())), 2.0),
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::Range, 2.0),
-            (
-                Type::Mapping(Box::new(key_type.clone()), Box::new(val_type.clone())),
-                2.0,
-            ),
         ]);
         self.apply_rule(node, &rule, rule_env, rule_type_db);
     }
@@ -416,7 +493,7 @@ impl RuleInferrer {
      */
     pub fn apply_list_operation_rule(
         &mut self,
-        node: &Expr,
+        node: &str,
         typ: &Type,
         rule_env: &mut RuleEnv,
         rule_type_db: &mut RuleTypeDB,
@@ -432,7 +509,7 @@ impl RuleInferrer {
      */
     pub fn apply_len_rule(
         &mut self,
-        node: &Expr,
+        node: &str,
         typ: &Type,
         rule_env: &mut RuleEnv,
         rule_type_db: &mut RuleTypeDB,
@@ -446,35 +523,6 @@ impl RuleInferrer {
     }
 
     /**
-     * Side effect of indexing a sequence with a value that is definitely
-     * not an integer or a string.
-     */
-    pub fn apply_index_with_non_int_or_str_value(
-        &mut self,
-        node: &Expr,
-        typ: &Type,
-        rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
-    ) {
-        let rule = Vec::from([(Type::List(Box::new(typ.clone())), 2.0)]);
-        self.apply_rule(node, &rule, rule_env, rule_type_db);
-    }
-
-    /**
-     * Side effect of indexing a sequence with a known int value.
-     */
-    pub fn apply_index_with_int_value(
-        &mut self,
-        node: &Expr,
-        typ: &Type,
-        rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
-    ) {
-        let rule = Vec::from([(Type::List(Box::new(typ.clone())), 2.0), (Type::Range, 2.0)]);
-        self.apply_rule(node, &rule, rule_env, rule_type_db);
-    }
-
-    /**
      * Apply the index rule to the given variable.
      * This rule states that when we index a given variable with an integer,
      * this means that it is either a string or a sequence (sets cannot be indexed).
@@ -482,7 +530,7 @@ impl RuleInferrer {
      */
     pub fn apply_index_rule(
         &mut self,
-        node: &Expr,
+        node: &str,
         typ: &Type,
         rule_env: &mut RuleEnv,
         rule_type_db: &mut RuleTypeDB,
@@ -500,7 +548,7 @@ impl RuleInferrer {
      */
     pub fn apply_key_rule(
         &mut self,
-        node: &Expr,
+        node: &str,
         key_typ: &Type,
         val_typ: &Type,
         rule_env: &mut RuleEnv,
@@ -520,7 +568,7 @@ impl RuleInferrer {
      */
     pub fn apply_index_assign_rule(
         &mut self,
-        node: &Expr,
+        node: &str,
         key_type: &Type,
         val_type: &Type,
         rule_env: &mut RuleEnv,
@@ -538,17 +586,12 @@ impl RuleInferrer {
 
     pub fn apply_rule(
         &mut self,
-        node: &Expr,
+        node: &str,
         rule: &Rule,
         rule_env: &mut RuleEnv,
         rule_type_db: &mut RuleTypeDB,
     ) {
-        if let Some(name) = node.as_name_expr() {
-            let node_id = name.id.as_str();
-            self.apply_rule_to_rule_env(node_id, rule, rule_env);
-        } else {
-            self.apply_rule_to_rule_type_db(&node.range(), rule, rule_type_db);
-        }
+        self.apply_rule_to_rule_env(node, rule, rule_env);
     }
 
     pub fn apply_rule_to_rule_env(&mut self, node_id: &str, rule: &Rule, rule_env: &mut RuleEnv) {

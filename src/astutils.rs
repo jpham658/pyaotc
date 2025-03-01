@@ -2,13 +2,29 @@ use rustpython_parser::ast::{
     Expr, ExprSubscript, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
 };
 
-use crate::type_inference::{NodeTypeDB, Scheme, Type, TypeEnv};
+use crate::type_inference::{NodeTypeDB, Type};
 
 pub fn print_ast(ast: &[Stmt]) {
     for node in ast {
         println!("{:#?}", node);
     }
 }
+
+/**
+ * Helper to serialise a subscript node
+ */
+pub fn serialise_subscript(subscript: &ExprSubscript) -> String {
+    let value_string = if let Some(name) = subscript.value.as_name_expr() {
+        name.id.as_str().to_string()
+    } else if let Some(val_subscript) = subscript.value.as_subscript_expr() {
+        serialise_subscript(val_subscript)
+    } else {
+        "".to_string()
+    };
+
+    format!("{value_string}[]")
+}
+
 /**
  * Get type name of the given node
  */

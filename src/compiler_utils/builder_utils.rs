@@ -7,6 +7,7 @@ use rustpython_ast::Ranged;
 use rustpython_parser::ast::{Expr, Stmt};
 
 use crate::{
+    astutils::get_iter_type_name,
     codegen::{
         error::{BackendError, IRGenResult},
         generic_codegen::LLVMGenericCodegen,
@@ -15,6 +16,26 @@ use crate::{
     compiler::Compiler,
     type_inference::{ConcreteValue, NodeTypeDB, Type},
 };
+
+/**
+ * Helper to handle predefined functions.
+ */
+pub fn handle_predefined_functions<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    args: Vec<AnyValueEnum<'ctx>>,
+    func_name: &str,
+) -> IRGenResult<'ctx> {
+    if func_name.eq("range") {
+        return build_range_call(compiler, args);
+    }
+    if func_name.eq("len") {
+        return build_len_call(compiler, args);
+    }
+
+    Err(BackendError {
+        message: "Function name is not predefined.",
+    })
+}
 
 /**
  * Convert AnyTypeEnum to BasicTypeEnum
@@ -133,6 +154,69 @@ pub fn is_iterable<'ctx>(compiler: &mut Compiler<'ctx>, value: &AnyValueEnum<'ct
         || val_ptr_type == iter_type.ptr_type(AddressSpace::default())
         || val_ptr_type == list_type.ptr_type(AddressSpace::default())
         || val_ptr_type == str_type;
+}
+
+/**
+ * Helper to create len call.
+ */
+pub fn build_len_call<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    args: Vec<AnyValueEnum<'ctx>>,
+) -> IRGenResult<'ctx> {
+    if args.len() != 1 {
+        return Err(BackendError {
+            message: "A single argument must be given to the len call.",
+        });
+    }
+
+    let arg = args[0];
+    if !arg.is_pointer_value() {
+        return Err(BackendError {
+            message: "Argument to len call must be a list, string, range, or dictionary.",
+        });
+    }
+    let list_ptr_type = compiler
+        .module
+        .get_struct_type("struct.List")
+        .unwrap()
+        .ptr_type(AddressSpace::default());
+    let range_ptr_type = compiler
+        .module
+        .get_struct_type("struct.Range")
+        .unwrap()
+        .ptr_type(AddressSpace::default());
+    let str_ptr_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+
+    let arg_type = arg.into_pointer_value().get_type();
+    let arg_type_string = if arg_type == list_ptr_type {
+        "list"
+    } else if arg_type == range_ptr_type {
+        "range"
+    } else if arg_type == str_ptr_type {
+        "str"
+    } else {
+        return Err(BackendError {
+            message: "Argument to len call must be a list, string, range, or dictionary.",
+        });
+    };
+
+    let len_fn_name = format!("{arg_type_string}_len");
+    let len_fn_err_msg = format!("{len_fn_name} has not been defined.");
+    let len_fn = compiler
+        .module
+        .get_function(&len_fn_name)
+        .expect(&len_fn_err_msg.as_str());
+    let arg_as_param = compiler
+        .convert_any_value_to_param_value(arg)
+        .expect("Could not convert len call argument to param.");
+
+    let len_call_err_msg = format!("Could not call {len_fn_name}");
+    let len_call = compiler
+        .builder
+        .build_call(len_fn, &[arg_as_param], "")
+        .expect(len_call_err_msg.as_str());
+
+    Ok(len_call.as_any_value_enum())
 }
 
 /**

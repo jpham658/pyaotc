@@ -1,7 +1,3 @@
-grid = [["1","1","1","1","0"]]
-  
-for i in grid:
-    print(i)
+x = [[1,2,3], [1,2,3]]
 
-print(grid)
-print("hello world")
+print(len(x))

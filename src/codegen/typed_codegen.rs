@@ -14,7 +14,8 @@ use crate::astutils::get_iter_type_name;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
     allocate_variable, any_type_to_basic_type, build_range_call, build_typed_for_loop_body,
-    get_list_element_enum, get_llvm_type, handle_global_assignment, is_iterable, store_value,
+    get_list_element_enum, get_llvm_type, handle_global_assignment, handle_predefined_functions,
+    is_iterable, store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
@@ -986,19 +987,22 @@ impl LLVMTypedCodegen for ExprCall {
             .expect("You can only call functions...?")
             .id
             .as_str();
+
+        if func_name.eq("range") || func_name.eq("len") {
+            let args = self
+                .args
+                .iter()
+                .map(|arg| arg.typed_codegen(compiler, types))
+                .collect::<Result<Vec<_>, BackendError>>()?;
+            return handle_predefined_functions(compiler, args, func_name);
+        }
+
         let function;
         if func_name.eq("print") {
             function = compiler
                 .module
                 .get_function("printf")
                 .expect("Could not find print function.");
-        } else if func_name.eq("range") {
-            let args = self
-                .args
-                .iter()
-                .map(|arg| arg.typed_codegen(compiler, types))
-                .collect::<Result<Vec<_>, BackendError>>()?;
-            return build_range_call(compiler, args);
         } else {
             // TODO: Add check here to check for other builtin function names
             function = compiler
