@@ -31,15 +31,22 @@ Range *create_range(word start, word stop, word step)
     return range;
 }
 
-word range_index(Range *range, word index, word *result)
+word *range_index(Range *range, word index)
 {
+    word *result = (word *)GC_malloc(sizeof(word));
     if (index < 0)
+    {
         index += range->length;
+    }
+
     if (index < 0 || index >= range->length)
-        return 0;
+    {
+        fprintf(stderr, "Index out of bounds: %ld (length: %zu)\n", index, range->length);
+        exit(EXIT_FAILURE);
+    }
 
     *result = range->start + index * range->step;
-    return 1;
+    return result;
 }
 
 void *range_next(void *iter)

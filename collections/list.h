@@ -28,8 +28,8 @@ typedef struct
 
 extern List *create_list(size_t item_size, ListElementType elt_type);
 extern size_t list_len(List *list);
-extern void *list_index(List *list, size_t index);
-extern void *list_set(List *list, size_t index, void *value);
+extern void *list_index(List *list, word index);
+extern void *list_set(List *list, word index, void *value);
 extern List *list_append(List *list, void *item);
 extern Iterator *list_iter(List *list);
 extern void *list_next(void *iter);

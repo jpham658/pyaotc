@@ -94,6 +94,36 @@ pub fn get_list_element_enum<'ctx>(
     None
 }
 
+pub fn get_llvm_type_name<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    value: &AnyValueEnum<'ctx>,
+) -> String {
+    let value_as_ptr_type = if value.is_pointer_value() {
+        value.into_pointer_value().get_type()
+    } else {
+        return "".to_string();
+    };
+
+    let list_ptr_type = compiler
+        .module
+        .get_struct_type("struct.List")
+        .unwrap()
+        .ptr_type(AddressSpace::default());
+    let range_ptr_type = compiler
+        .module
+        .get_struct_type("struct.Range")
+        .unwrap()
+        .ptr_type(AddressSpace::default());
+
+    if value_as_ptr_type == list_ptr_type {
+        return "list".to_string();
+    } else if value_as_ptr_type == range_ptr_type {
+        return "range".to_string();
+    }
+
+    "".to_string()
+}
+
 /**
  * Helper mapping types to their corresponding LLVM type
  */

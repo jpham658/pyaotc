@@ -288,11 +288,11 @@ impl TypeInferrer {
         }
 
         if func_name.eq("print") {
-            return Ok((Sub::new(), Type::ConcreteType(ConcreteValue::None)));
+            return Ok((composite_subs, Type::ConcreteType(ConcreteValue::None)));
         }
 
         if func_name.eq("len") {
-            return Ok((Sub::new(), Type::ConcreteType(ConcreteValue::Int)));
+            return Ok((composite_subs, Type::ConcreteType(ConcreteValue::Int)));
         }
 
         if func_name.eq("range") {
@@ -307,7 +307,8 @@ impl TypeInferrer {
                 };
                 sub = compose_subs(&arg_sub, &unifier);
             }
-            return Ok((sub, Type::Range));
+            composite_subs = compose_subs(&sub, &composite_subs);
+            return Ok((composite_subs, Type::Range));
         }
 
         let (func_sub, type1) = self.infer_expression(env, func, type_db)?;
@@ -739,7 +740,9 @@ impl TypeInferrer {
                             value_sub = compose_subs(&elt_unifier, &value_sub);
                         }
                         Type::List(elt_type) => {
+                            println!("Should be here...");
                             let elt_unifier = unify(&elt_type, &subscript_type)?;
+                            println!("Elt unifier {:?}", elt_unifier);
                             value_sub = compose_subs(&elt_unifier, &value_sub);
                         }
                         Type::Mapping(key_type, val_type) => {

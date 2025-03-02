@@ -20,15 +20,15 @@ def dfs(row, col, grid, visited):
     dfs(row, col - 1, grid, visited)
     dfs(row, col + 1, grid, visited)
 
-def numIslands(grid) -> "int":
+def numIslands(grid):
     m = len(grid)   #int
     n = len(grid[0])    #int
-    visited: "list[list[bool]]" = []    #list[v0] -> list[list[bool]]
+    visited = []    #list[v0] -> list[list[bool]]
     islandCount = 0 #int
     
     # initialise visited grid
     for i in range(m):  #i -> int
-        row: "list[bool]" = []    #list[v1]
+        row = []    #list[v1]
         for j in range(n):  #j -> int
             row.append(False)   #v1: bool
         visited.append(row) #v0: list[bool]

@@ -40,21 +40,29 @@ size_t list_len(List *list)
     return list->length;
 }
 
-void *list_index(List *list, size_t index)
+void *list_index(List *list, word index)
 {
-    if (index >= list->length)
+    if (index < 0)
     {
-        fprintf(stderr, "Index out of bounds: %zu (length: %zu)\n", index, list->length);
+        index += list->length;
+    }
+    if (index < 0 || index >= list->length)
+    {
+        fprintf(stderr, "Index out of bounds: %ld (length: %zu)\n", index, list->length);
         exit(EXIT_FAILURE);
     }
     return (uint8_t *)list->data + (index * list->item_size);
 }
 
-void *list_set(List *list, size_t index, void *value)
+void *list_set(List *list, word index, void *value)
 {
-    if (index >= list->length)
+    if (index < 0)
     {
-        fprintf(stderr, "Index out of bounds: %zu (length: %zu)\n", index, list->length);
+        index += list->length;
+    }
+    if (index < 0 || index >= list->length)
+    {
+        fprintf(stderr, "Index out of bounds: %ld (length: %zu)\n", index, list->length);
         exit(EXIT_FAILURE);
     }
     memcpy((uint8_t *)list->data + (index * list->item_size), value, list->item_size);

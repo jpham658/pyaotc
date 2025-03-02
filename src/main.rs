@@ -55,6 +55,7 @@ fn main() {
             // print_ast(&ast);
             // normal type inference
             infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
+            // println!("type db -> {:?}", type_db);
 
             // TODO: Implement inference with timeout
             // TODO: Add call collector support to type inferrer

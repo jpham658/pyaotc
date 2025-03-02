@@ -2,6 +2,7 @@ use inkwell::types::{AnyType, AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, Bas
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue, IntValue};
 use inkwell::AddressSpace;
 use malachite_bigint;
+use rustpython_ast::{ExprSubscript, Ranged};
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
     ExprList, ExprName, ExprUnaryOp, Operator, Stmt, StmtAssign, StmtExpr, StmtFor,
@@ -14,8 +15,8 @@ use crate::astutils::get_iter_type_name;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
     allocate_variable, any_type_to_basic_type, build_range_call, build_typed_for_loop_body,
-    get_list_element_enum, get_llvm_type, handle_global_assignment, handle_predefined_functions,
-    is_iterable, store_value,
+    get_list_element_enum, get_llvm_type, get_llvm_type_name, handle_global_assignment,
+    handle_predefined_functions, is_iterable, store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
@@ -604,10 +605,99 @@ impl LLVMTypedCodegen for Expr {
             Expr::Compare(comp) => comp.typed_codegen(compiler, types),
             Expr::UnaryOp(unop) => unop.typed_codegen(compiler, types),
             Expr::List(list) => list.typed_codegen(compiler, types),
+            Expr::Subscript(subscript) => subscript.typed_codegen(compiler, types),
             _ => Err(BackendError {
                 message: "Expression not implemented yet...",
             }),
         }
+    }
+}
+
+impl LLVMTypedCodegen for ExprSubscript {
+    fn typed_codegen<'ctx: 'ir, 'ir>(
+        &self,
+        compiler: &mut Compiler<'ctx>,
+        types: &NodeTypeDB,
+    ) -> IRGenResult<'ir> {
+        let value = self.value.typed_codegen(compiler, types)?;
+        let slice = self.slice.typed_codegen(compiler, types)?;
+
+        // TODO: Handle mapping key getter
+        if !slice.is_int_value() {
+            return Err(BackendError {
+                message: "Non-integer slices are not implemented yet.",
+            });
+        }
+
+        let value_type_string = get_llvm_type_name(compiler, &value);
+
+        if value_type_string.is_empty() {
+            return Err(BackendError {
+                message: "Invalid value type.",
+            });
+        }
+
+        let index_fn_name = format!("{value_type_string}_index");
+        let index_fn_err_msg = format!("{index_fn_name} has not been defined.");
+        let index_fn = compiler
+            .module
+            .get_function(&index_fn_name)
+            .expect(&index_fn_err_msg);
+
+        let call_index_fn_err_msg = format!("Could not call {index_fn_name}.");
+        let subscript_ptr = compiler
+            .builder
+            .build_call(
+                index_fn,
+                &[
+                    compiler
+                        .convert_any_value_to_param_value(value)
+                        .expect("Could not convert value to param."),
+                    compiler
+                        .convert_any_value_to_param_value(slice)
+                        .expect("Could not convert slice to param."),
+                ],
+                "subscript_ptr",
+            )
+            .expect(&call_index_fn_err_msg)
+            .as_any_value_enum();
+
+        if value_type_string == "range" {
+            let subscript = compiler
+                .builder
+                .build_load(subscript_ptr.into_pointer_value(), "range_subscript")
+                .expect("Could not load subscript pointer.");
+
+            return Ok(subscript.as_any_value_enum());
+        }
+
+        if let Some(element_type) = types.get(&self.range()) {
+            println!("element type of list {:?}", element_type);
+            let llvm_element_type =
+                get_llvm_type(compiler, &element_type).expect("Invalid element type.");
+            let llvm_element_type =
+                any_type_to_basic_type(llvm_element_type).expect("Invald element type.");
+
+            let subscript_ptr_casted = compiler
+                .builder
+                .build_pointer_cast(
+                    subscript_ptr.into_pointer_value(),
+                    llvm_element_type.ptr_type(AddressSpace::default()),
+                    "subscript_ptr_casted",
+                )
+                .expect("Could not cast subscript pointer.");
+
+            let subscript = compiler
+                .builder
+                .build_load(subscript_ptr_casted, "subscript")
+                .expect("Could not load casted subscript pointer.");
+
+            return Ok(subscript.as_any_value_enum());
+        }
+
+        Err(BackendError {
+            message: "Indexing non-list and non-range values is not yet implemented.",
+        })
     }
 }
 

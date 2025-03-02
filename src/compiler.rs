@@ -286,26 +286,20 @@ impl<'ctx> Compiler<'ctx> {
 
     pub fn setup_range_fns(&self) {
         let word_type = self.context.i64_type();
-        let usize_type = self.context.i64_type();
         let range_type = self
             .module
             .get_struct_type("struct.Range")
             .unwrap()
             .ptr_type(AddressSpace::default());
 
-        let range_len_fn_type = usize_type.fn_type(&[range_type.into()], false);
+        let range_len_fn_type = word_type.fn_type(&[range_type.into()], false);
         let create_range_fn_type = range_type.fn_type(
             &[word_type.into(), word_type.into(), word_type.into()],
             false,
         );
-        let range_index_fn_type = word_type.fn_type(
-            &[
-                range_type.into(),
-                word_type.into(),
-                word_type.ptr_type(AddressSpace::default()).into(),
-            ],
-            false,
-        );
+        let range_index_fn_type = word_type
+            .ptr_type(AddressSpace::default())
+            .fn_type(&[range_type.into(), word_type.into()], false);
 
         self.module
             .add_function("range_len", range_len_fn_type, None);
