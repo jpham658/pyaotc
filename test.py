@@ -1,3 +1,10 @@
-x = [[1,2,3], [1,2,3]]
+def subscript(x): # should infer that subscript is string
+    for i in range(len(x)):
+        print(x[i])
 
-print(len(x))
+# subscript("hi")
+subscript([1,2])
+# subscript(range(3,5))
+
+x = "hi"
+print(x[0])

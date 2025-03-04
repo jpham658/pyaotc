@@ -14,7 +14,6 @@ mod inferrer_tests {
             Arg, ArgWithDefault, Arguments, ExprBinOp, ExprContext, ExprName, Identifier, Operator,
             StmtAssign, Suite, TextSize,
         },
-        parse,
         text_size::TextRange,
         Parse,
     };

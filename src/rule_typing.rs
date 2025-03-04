@@ -142,17 +142,25 @@ pub fn infer_stmts_with_rules(
                 ..
             }) => {
                 let iter_string = get_node_string(iter);
-                if !iter_string.is_empty() {
-                    let key_type = rule_inferrer.get_new_typevar();
-                    let val_type = rule_inferrer.get_new_typevar();
-                    rule_inferrer.apply_for_in_stmt_rule(
-                        &iter_string,
-                        &key_type,
-                        &val_type,
+                if iter_string.is_empty() {
+                    infer_expr_with_rules(
                         rule_env,
+                        &iter,
                         rule_type_db,
+                        &mut rule_inferrer,
+                        type_db,
                     );
+                    continue;
                 }
+                let key_type = rule_inferrer.get_new_typevar();
+                let val_type = rule_inferrer.get_new_typevar();
+                rule_inferrer.apply_for_in_stmt_rule(
+                    &iter_string,
+                    &key_type,
+                    &val_type,
+                    rule_env,
+                    rule_type_db,
+                );
 
                 let _ = infer_stmts_with_rules(rule_env, body, rule_type_db, type_db);
                 let _ = infer_stmts_with_rules(rule_env, orelse, rule_type_db, type_db);
@@ -184,6 +192,10 @@ fn infer_expr_with_rules(
                 let func_name = name.id.as_str();
                 let typevar = rule_inferrer.get_new_typevar();
                 if !func_name.eq("len") || call.args.len() == 0 {
+                    // continue looking inside function calls
+                    for arg in &call.args {
+                        infer_expr_with_rules(rule_env, arg, rule_type_db, rule_inferrer, type_db);
+                    }
                     return;
                 }
 
@@ -221,8 +233,6 @@ fn infer_expr_with_rules(
                     rule_type_db,
                 );
             }
-
-            return;
         }
         Expr::Subscript(subscript) => {
             // make sure to infer type of value too!
@@ -607,26 +617,6 @@ impl RuleInferrer {
             heuristics.insert(typ.clone(), val + add_val);
         }
         rule_env.insert(node_id.to_string(), heuristics);
-    }
-
-    pub fn apply_rule_to_rule_type_db(
-        &mut self,
-        node_range: &TextRange,
-        rule: &Rule,
-        rule_type_db: &mut RuleTypeDB,
-    ) {
-        let mut heuristics = match rule_type_db.get(node_range) {
-            None => HashMap::new(),
-            Some(map) => map.clone(),
-        };
-        for (typ, add_val) in rule {
-            let val = match heuristics.get(&typ) {
-                None => 0.0 as f32,
-                Some(f) => *f,
-            };
-            heuristics.insert(typ.clone(), val + add_val);
-        }
-        rule_type_db.insert(node_range.clone(), heuristics);
     }
 }
 

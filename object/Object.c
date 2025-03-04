@@ -23,20 +23,21 @@ Object *new_int(word val)
     return (Object *)(((uword)val << 1) | 0x1);
 }
 
-bool object_is_bool(Object *obj)
+Object *new_bool(word val)
 {
-    return ((uword)obj & 0x3) == 0x0;
+    return (Object *)(((uword)1 << 4) | ((uword)val << 3) | 0x0);
 }
 
 bool object_as_bool(Object *obj)
 {
     CHECK_PREDICATE(object_is_bool(obj), "Invalid bool object.");
-    return (bool)((uword)obj >> 3);
+    // Extract the boolean bit
+    return (bool)(((uword)obj >> 3) & 0x1);
 }
 
-Object *new_bool(word val)
+bool object_is_bool(Object *obj)
 {
-    return (Object *)((uword)val << 3);
+    return obj != NULL && ((uword)obj & 0x7) == 0x0;
 }
 
 bool object_is_heap_object(Object *obj)
@@ -119,7 +120,7 @@ List *object_as_list(Object *obj)
 Object *new_str(const char *value)
 {
     HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
-    *result = (HeapObject){.type = Str, .str_value = value};
+    *result = (HeapObject){.type = Str, .str_value = GC_strdup(value)};
     return object_from_address(result);
 }
 
@@ -230,9 +231,11 @@ void print_obj(int arg_num, Object *obj, ...)
         case ListT:
             print_list(object_as_list(curr));
             break;
-        default:
+        case Str:
             print_str(object_as_str(curr));
             break;
+        default:
+            printf("invalid object\n");
         };
 
         curr = va_arg(args, Object *);
@@ -298,9 +301,9 @@ Object *object_into_iterator(Object *obj)
     }
     default:
     {
-        // TODO: if we get here, it means that all possible types are exhausted, so we
-        // have an iterator.
-        return obj;
+        const char *str = object_as_str(obj);
+        Iterator *str_as_iter = str_iter(str);
+        return new_iterator(str_as_iter);
     }
     }
 }
@@ -327,7 +330,19 @@ Object *object_next(Object *obj)
         }
         break;
     }
-    case ListIter:
+    case StringIter:
+    {
+        const char **next_str_ptr = (const char **)obj_iter->next(obj_iter);
+        if (next_str_ptr == NULL)
+        {
+            return NULL;
+        }
+        else
+        {
+            return new_str(*next_str_ptr);
+        }
+    }
+    default:
     {
         Object **next_obj_val = (Object **)obj_iter->next(obj_iter);
         if (next_obj_val == NULL)
@@ -340,7 +355,135 @@ Object *object_next(Object *obj)
         }
         break;
     }
+    }
+}
+
+Object *object_index(Object *value, Object *slice)
+{
+    CHECK_PREDICATE(value != NULL, "Value is null.");
+    CHECK_PREDICATE((object_is_list(value) || object_is_str(value) || object_is_range(value)), "Invalid object to be subscripted.");
+
+    switch (object_type(value))
+    {
+    case ListT:
+    {
+        CHECK_PREDICATE(object_is_int(slice), "Cannot index with non-integer slice.");
+        List *val_as_list = object_as_list(value);
+        word slice_as_int = object_as_int(slice);
+        Object **val_at_index = (Object **)list_index(val_as_list, slice_as_int);
+        if (val_at_index == NULL)
+        {
+            return NULL;
+        }
+        return *val_at_index;
+    }
+    case RangeT:
+    {
+        CHECK_PREDICATE(object_is_int(slice), "Cannot index with non-integer slice.");
+        Range *val_as_range = object_as_range(value);
+        word slice_as_int = object_as_int(slice);
+        word *val_at_index = (word *)range_index(val_as_range, slice_as_int);
+        return new_int(*val_at_index);
+    }
     default:
-        return obj;
+    {
+        CHECK_PREDICATE(object_is_int(slice), "Cannot index with non-integer slice.");
+        const char *val_as_str = object_as_str(value);
+        word slice_as_int = object_as_int(slice);
+        const char *val_at_index = str_index(val_as_str, slice_as_int);
+        Object *res = new_str(val_at_index);
+        return res;
+    }
+    }
+}
+
+Object *object_set(Object *value, Object *slice, Object *new_value)
+{
+    CHECK_PREDICATE(object_is_list(value), "Cannot set object.");
+    switch (object_type(value))
+    {
+    default:
+    {
+        CHECK_PREDICATE(object_is_int(slice), "Slice cannot be non-integer for list index.");
+        List *val_as_list = object_as_list(value);
+        word slice_as_int = object_as_int(slice);
+        Object **val_at_index = (Object **)list_set(val_as_list, slice_as_int, &new_value);
+        return *val_at_index;
+    }
+    }
+}
+
+Object *object_append(Object *object, Object *appended_val)
+{
+    CHECK_PREDICATE(object_is_list(object), "Cannot append to non-list.");
+    List *list = object_as_list(object);
+    list_append(list, &appended_val);
+    return object;
+}
+
+Object *object_len(Object *object)
+{
+    CHECK_PREDICATE((object_is_list(object) || object_is_str(object) || object_is_range(object)), "Object has no length attribute.");
+    switch (object_type(object))
+    {
+    case ListT:
+    {
+        List *list_obj = object_as_list(object);
+        return new_int(list_len(list_obj));
+    }
+    case RangeT:
+    {
+        Range *range_obj = object_as_range(object);
+        return new_int(range_len(range_obj));
+    }
+    default:
+    {
+        const char *str_obj = object_as_str(object);
+        return new_int(str_len(str_obj));
+    }
+    }
+}
+
+/**
+ * Helper to evaluate if an obj is truthy or not.
+ */
+bool object_as_truthy(Object *obj)
+{
+    if (obj == NULL)
+    {
+        return false;
+    }
+    switch (object_type(obj))
+    {
+    case Bool:
+        return object_as_bool(obj);
+    case Int:
+    {
+        bool i_as_bool = (bool)object_as_int(obj);
+        return i_as_bool;
+    }
+    case Float:
+    {
+        bool f_as_bool = (bool)object_as_float(obj);
+        return f_as_bool;
+    }
+    case Str:
+    {
+        const char *str = object_as_str(obj);
+        return str_is_truthy(str);
+    }
+    case ListT:
+    {
+        List *list_obj = object_as_list(obj);
+        return list_len(list_obj) != 0;
+    }
+    case RangeT:
+    {
+        Range *range_obj = object_as_range(obj);
+        return range_len(range_obj) != 0;
+    }
+    default:
+        // TODO: Handle invalid cases (although everything will be either truthy or falsy...)
+        return false;
     }
 }

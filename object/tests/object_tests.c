@@ -37,7 +37,7 @@ void test_object_is_str_on_non_str()
 void test_object_as_str()
 {
     Object *str_obj = new_str("Hello world!");
-    assert(object_as_str(str_obj) == "Hello world!");
+    assert(str_eq(object_as_str(str_obj), "Hello world!"));
 }
 
 void test_object_is_float_on_float()
@@ -167,7 +167,7 @@ void test_object_as_list()
     {
         Object **item = (Object **)list_index(list, i);
         const char *obj_as_str = object_as_str(*item);
-        assert(strcmp(obj_as_str, strings[i]) == 0);
+        assert(str_eq(obj_as_str, strings[i]));
     }
 }
 
@@ -190,6 +190,127 @@ void test_iterating_over_list_obj()
         print_obj(1, curr);
         print_newline();
         curr = object_next(list_as_iter);
+    }
+}
+
+void test_object_index_with_list()
+{
+    List *list = create_list(sizeof(Object *), LIST_OBJ);
+    const char *strings[] = {"first", "second", "third", "fourth"};
+    for (int i = 0; i < 4; i++)
+    {
+        Object *str_obj = new_str(strings[i]);
+        list_append(list, &str_obj);
+    }
+    Object *list_obj = new_list(list);
+
+    for (int i = 0; i < 4; i++)
+    {
+        Object *index = new_int(i);
+        Object *result = object_index(list_obj, index);
+        assert(object_is_str(result));
+        assert(str_eq(object_as_str(result), strings[i]));
+    }
+
+    for (int i = -1; i >= -4; i--)
+    {
+        Object *index = new_int(i);
+        Object *result = object_index(list_obj, index);
+        assert(object_is_str(result));
+        assert(str_eq(object_as_str(result), strings[4 + i]));
+    }
+}
+
+void test_object_index_with_string()
+{
+    const char *test_str = "hello";
+    Object *str_obj = new_str(test_str);
+
+    for (int i = 0; i < 5; i++)
+    {
+        Object *index = new_int(i);
+        Object *result = object_index(str_obj, index);
+        printf("str[%d] = ", i);
+        print_obj(1, result);
+        print_newline();
+        assert(result != NULL);
+        assert(object_is_str(result));
+        char expected_str[2];
+        expected_str[0] = test_str[i];
+        expected_str[1] = '\0';
+        assert(str_eq(object_as_str(result), expected_str));
+    }
+
+    for (int i = -1; i >= -5; i--)
+    {
+        Object *index = new_int(i);
+        Object *result = object_index(str_obj, index);
+        printf("str[%d] = ", i);
+        print_obj(1, result);
+        print_newline();
+        assert(object_is_str(result));
+        char expected_str[2];
+        expected_str[0] = test_str[5 + i];
+        expected_str[1] = '\0';
+        assert(str_eq(object_as_str(result), expected_str));
+    }
+}
+
+void test_object_index_with_range()
+{
+    Object *range_obj = new_range(create_range(0, 10, 1));
+
+    for (int i = 0; i < 10; i++)
+    {
+        Object *index = new_int(i);
+        Object *result = object_index(range_obj, index);
+        assert(object_is_int(result));
+        assert(object_as_int(result) == i);
+    }
+
+    for (int i = -1; i >= -10; i--)
+    {
+        Object *index = new_int(i);
+        Object *result = object_index(range_obj, index);
+        assert(object_is_int(result));
+        assert(object_as_int(result) == 10 + i);
+    }
+}
+
+void test_object_set_list()
+{
+    List *list = create_list(sizeof(Object *), LIST_OBJ);
+    const char *strings[] = {"first", "second", "third", "fourth"};
+
+    for (int i = 0; i < 4; i++)
+    {
+        Object *str_obj = new_str(strings[i]);
+        list_append(list, &str_obj);
+    }
+    Object *list_obj = new_list(list);
+    Object *index_obj = new_int(0);
+    Object *value_obj = new_str("zero");
+
+    Object *actual_res = object_set(list_obj, index_obj, value_obj);
+    assert(object_is_str(actual_res));
+}
+
+void test_object_append()
+{
+    List *list = create_list(sizeof(Object *), LIST_OBJ);
+    Object *list_obj = new_list(list);
+
+    for (int i = 0; i < 4; i++)
+    {
+        Object *int_obj = new_int(i);
+        object_append(list_obj, int_obj);
+    }
+
+    for (int i = 0; i < 4; i++)
+    {
+        Object *actual = object_index(list_obj, new_int(i));
+        assert(object_is_int(actual));
+        assert(object_as_int(actual) == i);
     }
 }
 
@@ -223,6 +344,17 @@ int main()
     test_object_as_list();
     test_iterating_over_list_obj();
 
+    test_object_index_with_list();
+    test_object_index_with_range();
+    test_object_index_with_string();
+
+    test_object_set_list();
+    test_object_append();
+
+    print_obj(1, new_bool(false));
+    print_newline();
+    print_obj(1, new_bool(true));
+    print_newline();
     printf("Object tests successful.\n");
     return 0;
 }

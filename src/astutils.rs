@@ -2,7 +2,7 @@ use rustpython_parser::ast::{
     Expr, ExprSubscript, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
 };
 
-use crate::type_inference::{NodeTypeDB, Type};
+use crate::type_inference::{ConcreteValue, NodeTypeDB, Type};
 
 pub fn print_ast(ast: &[Stmt]) {
     for node in ast {
@@ -36,6 +36,7 @@ pub fn get_iter_type_name(node: &Expr, types: &NodeTypeDB) -> String {
                 Type::Range => "range",
                 Type::List(..) => "list",
                 Type::Mapping(_, _) => "dict",
+                Type::ConcreteType(ConcreteValue::Str) => "str",
                 _ => "",
             },
             _ => "",
@@ -63,6 +64,8 @@ pub fn get_iter_type_name(node: &Expr, types: &NodeTypeDB) -> String {
         "dict"
     } else if node.is_set_expr() {
         "set"
+    } else if node.is_constant_expr() && node.as_constant_expr().unwrap().value.is_str() {
+        "str"
     } else {
         ""
     };

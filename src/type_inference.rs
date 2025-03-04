@@ -99,71 +99,43 @@ pub fn infer_stmts(
 ) {
     for stmt in ast {
         match infer_types(inferrer, env, &stmt, type_db) {
-            Ok(typ) => match &stmt {
-                Stmt::FunctionDef(funcdef) => {
-                    let func_name = funcdef.name.as_str().to_string();
-                    env.insert(
-                        func_name,
-                        Scheme {
-                            type_name: Box::new(typ.clone()),
-                            bounded_vars: BTreeSet::new(),
-                        },
-                    );
-                    type_db.insert(funcdef.range(), typ.clone());
-                }
-                Stmt::Assign(assign) => {
-                    let lhs = assign.targets[0].clone();
-                    let rhs = assign.value.clone();
-                    if lhs.is_name_expr() {
-                        let lhs_name = assign.targets[0]
-                            .as_name_expr()
-                            .unwrap()
-                            .id
-                            .as_str()
-                            .to_string();
-                        env.insert(
-                            lhs_name,
-                            Scheme {
-                                type_name: Box::new(typ.clone()),
-                                bounded_vars: BTreeSet::new(),
-                            },
-                        );
-                    } else {
-                        let lhs_val = &lhs.as_subscript_expr().unwrap().value;
-                        if lhs_val.is_name_expr() {
-                            let lhs_name = lhs_val.as_name_expr().unwrap().id.as_str().to_string();
-                            env.insert(
-                                lhs_name,
-                                Scheme {
-                                    type_name: Box::new(typ.clone()),
-                                    bounded_vars: BTreeSet::new(),
-                                },
-                            );
+            Ok(typ) => {
+                let inferred_scheme = generalise(&typ, env);
+                match &stmt {
+                    Stmt::FunctionDef(funcdef) => {
+                        let func_name = funcdef.name.as_str().to_string();
+                        env.insert(func_name, inferred_scheme);
+                        type_db.insert(funcdef.range(), typ.clone());
+                    }
+                    Stmt::Assign(assign) => {
+                        let lhs = assign.targets[0].clone();
+                        let rhs = assign.value.clone();
+                        let lhs_name = if let Some(name) = lhs.as_name_expr() {
+                            name.id.as_str().to_string()
+                        } else if let Some(subscript) = lhs.as_subscript_expr() {
+                            serialise_subscript(subscript)
+                        } else {
+                            continue;
+                        };
+                        env.insert(lhs_name, inferred_scheme);
+                        type_db.insert(rhs.range(), typ);
+                    }
+                    Stmt::AnnAssign(annassign) => {
+                        let rhs = annassign.value.clone();
+                        if let Some(name) = annassign.target.as_name_expr() {
+                            let name = name.id.as_str();
+                            env.insert(name.to_string(), inferred_scheme);
+                        } else if let Some(subscript) = annassign.target.as_subscript_expr() {
+                            type_db.insert(subscript.range(), typ.clone());
+                        }
+
+                        if let Some(right) = rhs {
+                            type_db.insert(right.range(), typ);
                         }
                     }
-                    type_db.insert(rhs.range(), typ);
+                    _ => {}
                 }
-                Stmt::AnnAssign(annassign) => {
-                    let rhs = annassign.value.clone();
-                    if let Some(name) = annassign.target.as_name_expr() {
-                        let name = name.id.as_str();
-                        env.insert(
-                            name.to_string(),
-                            Scheme {
-                                type_name: Box::new(typ.clone()),
-                                bounded_vars: BTreeSet::new(),
-                            },
-                        );
-                    } else if let Some(subscript) = annassign.target.as_subscript_expr() {
-                        type_db.insert(subscript.range(), typ.clone());
-                    }
-
-                    if let Some(right) = rhs {
-                        type_db.insert(right.range(), typ);
-                    }
-                }
-                _ => {}
-            },
+            }
             Err(e) => {
                 eprintln!("{:?}", e);
             }
@@ -178,9 +150,8 @@ pub fn infer_types(
     type_db: &mut NodeTypeDB,
 ) -> Result<Type, InferenceError> {
     let (sub, inferred_type) = inferrer.infer_stmt(env, stmt, type_db)?;
-    for (_, typ) in type_db.iter_mut() {
-        *typ = apply(&sub, typ);
-    }
+    apply_to_type_db(&sub, type_db);
+    *env = apply_to_type_env(&sub, env);
     Ok(apply(&sub, &inferred_type))
 }
 
@@ -285,6 +256,7 @@ impl TypeInferrer {
             composite_subs = compose_subs(&composite_subs, &sub_arg);
             arg_types.push(arg_type.clone());
             type_db.insert(arg.range(), arg_type);
+            *env = new_env;
         }
 
         if func_name.eq("print") {
@@ -712,10 +684,12 @@ impl TypeInferrer {
                 (sub, typ) => (sub, typ),
             };
 
+        new_env = apply_to_type_env(&value_sub, &mut new_env);
+
         let subscript_type = match subscript_string.as_str() {
             "" => Type::TypeVar(TypeVar(self.fresh_var_generator.next())),
             _ => {
-                if let Some(scheme) = env.get(&subscript_string) {
+                if let Some(scheme) = new_env.get(&subscript_string) {
                     *scheme.type_name.clone()
                 } else {
                     Type::TypeVar(TypeVar(self.fresh_var_generator.next()))
@@ -723,10 +697,10 @@ impl TypeInferrer {
             }
         };
 
-        let value_typevar = match value_string.as_str() {
+        let value_type = match value_string.as_str() {
             "" => value_type,
             _ => {
-                if let Some(scheme) = env.get(&value_string) {
+                if let Some(scheme) = new_env.get(&value_string) {
                     let typ = *scheme.type_name.clone();
                     match &typ {
                         Type::ConcreteType(ConcreteValue::Str) => {
@@ -740,9 +714,7 @@ impl TypeInferrer {
                             value_sub = compose_subs(&elt_unifier, &value_sub);
                         }
                         Type::List(elt_type) => {
-                            println!("Should be here...");
                             let elt_unifier = unify(&elt_type, &subscript_type)?;
-                            println!("Elt unifier {:?}", elt_unifier);
                             value_sub = compose_subs(&elt_unifier, &value_sub);
                         }
                         Type::Mapping(key_type, val_type) => {
@@ -755,17 +727,23 @@ impl TypeInferrer {
                     }
                     typ
                 } else {
-                    Type::TypeVar(TypeVar(self.fresh_var_generator.next()))
+                    value_type
                 }
             }
         };
 
-        type_db.insert(subscript.value.range(), value_typevar.clone());
+        type_db.insert(subscript.value.range(), value_type.clone());
         type_db.insert(subscript.slice.range(), slice_type.clone());
         type_db.insert(subscript.range(), subscript_type.clone());
 
-        let subscript_scheme = generalise(&subscript_type, env);
-        let value_scheme = generalise(&value_typevar, env);
+        let subscript_scheme = Scheme {
+            type_name: Box::new(subscript_type.clone()),
+            bounded_vars: BTreeSet::new(),
+        };
+        let value_scheme = Scheme {
+            type_name: Box::new(value_type),
+            bounded_vars: BTreeSet::new(),
+        };
 
         env.insert(subscript_string, subscript_scheme);
         env.insert(value_string, value_scheme);

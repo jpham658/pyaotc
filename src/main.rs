@@ -52,21 +52,25 @@ fn main() {
 
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
-            // print_ast(&ast);
+            print_ast(&ast);
             // normal type inference
             infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
-            // println!("type db -> {:?}", type_db);
 
             // TODO: Implement inference with timeout
             // TODO: Add call collector support to type inferrer
             // if we still have unbound types, use call collector to instantiate functions with
             // most common argument types
-            // while (!free_type_vars_in_type_env(&type_env).is_empty() || timeout_check()) {
-            //     let mut call_collector = FunctionCallCollector::new(&type_db);
-            //     call_collector.collect_calls(&ast);
-            //     println!("{:?}", call_collector.most_common_arg_types());
-            //     infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
-            // }
+            let max_inference_rounds = 3;
+            let mut inference_round = 0;
+            while inference_round < max_inference_rounds
+                && !free_type_vars_in_type_env(&type_env).is_empty()
+            {
+                // let mut call_collector = FunctionCallCollector::new(&type_db);
+                // call_collector.collect_calls(&ast);
+                // println!("{:?}", call_collector.most_common_arg_types());
+                infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
+                inference_round += 1;
+            }
 
             compiler.compile(&ast, &type_db, file_name);
             // compiler.compile_generically(&ast, file_name);

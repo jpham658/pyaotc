@@ -48,8 +48,8 @@ void *list_index(List *list, word index)
     }
     if (index < 0 || index >= list->length)
     {
-        fprintf(stderr, "Index out of bounds: %ld (length: %zu)\n", index, list->length);
-        exit(EXIT_FAILURE);
+        fprintf(stderr, "Cannot index. Index out of bounds: %ld (length: %zu)\n", index, list->length);
+        return NULL;
     }
     return (uint8_t *)list->data + (index * list->item_size);
 }
@@ -66,6 +66,7 @@ void *list_set(List *list, word index, void *value)
         exit(EXIT_FAILURE);
     }
     memcpy((uint8_t *)list->data + (index * list->item_size), value, list->item_size);
+    return list_index(list, index);
 }
 
 List *list_resize(List *list)

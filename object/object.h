@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include "../collections/range.h"
 #include "../collections/list.h"
+#include "../collections/string_utils.h"
 
 #define CHECK_PREDICATE(pred, msg)                                              \
     do                                                                          \
@@ -77,6 +78,7 @@ extern const char *object_as_str(Object *obj);
 extern double object_as_float(Object *obj);
 extern Range *object_as_range(Object *obj);
 extern List *object_as_list(Object *obj);
+extern bool object_as_truthy(Object *obj);
 
 extern Object *new_str(const char *value);
 extern Object *new_float(double value);
@@ -101,5 +103,13 @@ extern Iterator *object_as_iterator(Object *obj);
 extern Object *object_into_iterator(Object *obj);
 extern Object *build_range_obj(Object *start, Object *stop, Object *step);
 extern Object *object_next(Object *obj);
+
+// Subscripting functions
+extern Object *object_index(Object *value, Object *slice);
+extern Object *object_set(Object *value, Object *slice, Object *new_value);
+
+// Collection-specific functions
+extern Object *object_append(Object *list_obj, Object *appended_val);
+extern Object *object_len(Object *obj);
 
 #endif

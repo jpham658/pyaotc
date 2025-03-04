@@ -3,11 +3,10 @@ use inkwell::{
     values::{AnyValue, AnyValueEnum, FunctionValue, IntValue, PointerValue},
     AddressSpace,
 };
-use rustpython_ast::Ranged;
+use rustpython_ast::{CmpOp, ExprAttribute, ExprSubscript, Ranged, StmtAssign};
 use rustpython_parser::ast::{Expr, Stmt};
 
 use crate::{
-    astutils::get_iter_type_name,
     codegen::{
         error::{BackendError, IRGenResult},
         generic_codegen::LLVMGenericCodegen,
@@ -16,6 +15,335 @@ use crate::{
     compiler::Compiler,
     type_inference::{ConcreteValue, NodeTypeDB, Type},
 };
+
+use super::get_predicate::get_int_predicate;
+
+/**
+ * Helper to initialise Object* from a typed value
+ */
+pub fn create_object<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    value: AnyValueEnum<'ctx>,
+) -> IRGenResult<'ctx> {
+    let list_ptr_type = compiler
+        .module
+        .get_struct_type("struct.List")
+        .unwrap()
+        .ptr_type(AddressSpace::default());
+    let range_ptr_type = compiler
+        .module
+        .get_struct_type("struct.Range")
+        .unwrap()
+        .ptr_type(AddressSpace::default());
+
+    let new_object_fn = match value.get_type() {
+        AnyTypeEnum::IntType(v) if v == compiler.context.bool_type() => compiler
+            .module
+            .get_function("new_bool")
+            .expect("new_bool isn't defined"),
+        AnyTypeEnum::IntType(..) => compiler
+            .module
+            .get_function("new_int")
+            .expect("new_int isn't defined"),
+        AnyTypeEnum::FloatType(..) => compiler
+            .module
+            .get_function("new_float")
+            .expect("new_float isn't defined"),
+        AnyTypeEnum::PointerType(ptr_type) if ptr_type == list_ptr_type => compiler
+            .module
+            .get_function("new_list")
+            .expect("new_list isn't defined"),
+        AnyTypeEnum::PointerType(ptr_type) if ptr_type == range_ptr_type => compiler
+            .module
+            .get_function("new_range")
+            .expect("new_range isn't defined"),
+        AnyTypeEnum::PointerType(ptr_type) => compiler
+            .module
+            .get_function("new_str")
+            .expect("new_str isn't defined"),
+        _ => {
+            return Err(BackendError {
+                message: "Given value cannot be converted to Object*.",
+            })
+        }
+    };
+
+    let new_object = compiler
+        .builder
+        .build_call(
+            new_object_fn,
+            &[compiler.convert_any_value_to_param_value(value).unwrap()],
+            "boxed_value",
+        )
+        .expect("Could not convert value to Object*.");
+
+    Ok(new_object.as_any_value_enum())
+}
+
+/**
+ * Helper to handle function calls that are attributes
+ * e.g. x.append(3)
+ * Only really handles append calls...
+ */
+pub fn handle_attr_fn_call<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    types: &NodeTypeDB,
+    attr: &ExprAttribute,
+    args: &[AnyValueEnum<'ctx>],
+) -> IRGenResult<'ctx> {
+    // only handles append
+    if !attr.attr.as_str().eq("append") {
+        return Err(BackendError {
+            message: "Invalid function call.",
+        });
+    }
+
+    if args.len() != 1 {
+        return Err(BackendError {
+            message: "Invalid number of arguments given to append call.",
+        });
+    }
+
+    let list_ptr_type = compiler
+        .module
+        .get_struct_type("struct.List")
+        .unwrap()
+        .ptr_type(AddressSpace::default());
+    let void_ptr_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+
+    let value_ptr = if let Some(Type::List(..)) = types.get(&attr.value.range()) {
+        let value_codegen = attr.value.typed_codegen(compiler, types)?;
+        compiler
+            .builder
+            .build_pointer_cast(value_codegen.into_pointer_value(), list_ptr_type, "")
+            .expect("Could not cast pointer to list type.")
+    } else {
+        return Err(BackendError {
+            message: "Can only call append on lists.",
+        });
+    };
+
+    let arg = args[0];
+
+    let list_append_fn = compiler
+        .module
+        .get_function("list_append")
+        .expect("list_append is not defined.");
+
+    let arg_ptr = match arg.get_type().size_of() {
+        Some(size) => compiler
+            .build_gc_malloc_call(size)
+            .expect("Could not allocate memory to value."),
+        _ => {
+            return Err(BackendError {
+                message: "Invalid argument for append.",
+            })
+        }
+    }
+    .into_pointer_value();
+    let arg_ptr = compiler
+        .builder
+        .build_pointer_cast(
+            arg_ptr,
+            any_type_to_basic_type(arg.get_type())
+                .expect("Invalid argument for append.")
+                .ptr_type(AddressSpace::default()),
+            "",
+        )
+        .expect("Could not cast arg pointer.");
+
+    store_value(compiler, &arg_ptr, &arg)?;
+
+    let arg_ptr_as_void_ptr = compiler
+        .builder
+        .build_pointer_cast(arg_ptr, void_ptr_type, "")
+        .expect("Could not cast pointer to void type.")
+        .as_any_value_enum();
+
+    let params: Vec<_> = Vec::from([value_ptr.as_any_value_enum(), arg_ptr_as_void_ptr])
+        .into_iter()
+        .map(|arg| {
+            compiler
+                .convert_any_value_to_param_value(arg)
+                .expect("Invalid param type for subscript assignment.")
+        })
+        .collect();
+
+    let append_call = compiler
+        .builder
+        .build_call(list_append_fn, &params, "append");
+
+    match append_call {
+        Ok(res) => Ok(res.as_any_value_enum()),
+        Err(..) => Err(BackendError {
+            message: "Could not append value to list.",
+        }),
+    }
+}
+
+/**
+ * Helper to handle subscript assignment
+ */
+pub fn handle_subscript_assignment<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    types: &NodeTypeDB,
+    subscript: &ExprSubscript,
+    assign_stmt: &StmtAssign,
+) -> IRGenResult<'ctx> {
+    let list_ptr_type = compiler
+        .module
+        .get_struct_type("struct.List")
+        .unwrap()
+        .ptr_type(AddressSpace::default());
+    let void_ptr_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+
+    let subscript_value = subscript.value.typed_codegen(compiler, types)?;
+    let subscript_value = match types.get(&subscript.value.range()) {
+        Some(typ) => {
+            let llvm_type = get_llvm_type(compiler, typ)
+                .expect("Only lists and dictionaries can be subscripted.");
+            if !llvm_type.is_pointer_type() || llvm_type.into_pointer_type() != list_ptr_type {
+                return Err(BackendError {
+                    message: "Only lists and dictionaries can be subscripted.",
+                });
+            }
+            compiler
+                .builder
+                .build_pointer_cast(
+                    subscript_value.into_pointer_value(),
+                    llvm_type.into_pointer_type(),
+                    "",
+                )
+                .expect("Could not cast pointer.")
+        }
+        _ => {
+            return Err(BackendError {
+                message: "Only lists and dictionaries can be subscripted.",
+            })
+        }
+    };
+
+    let slice = subscript.slice.typed_codegen(compiler, types)?;
+
+    if !slice.is_int_value() {
+        return Err(BackendError {
+            message: "Dictionaries are not implemented yet.",
+        });
+    }
+
+    let subscript_value_type_string =
+        get_llvm_type_name(compiler, &subscript_value.as_any_value_enum());
+    if subscript_value_type_string.is_empty() {
+        return Err(BackendError {
+            message: "Invalid subscript value type.",
+        });
+    }
+    let set_fn_name = format!("{subscript_value_type_string}_set");
+    let set_fn_err_msg = format!("{set_fn_name} is not defined.");
+    let set_fn = compiler
+        .module
+        .get_function(&set_fn_name)
+        .expect(set_fn_err_msg.as_str());
+
+    let rhs = assign_stmt.value.typed_codegen(compiler, types)?;
+    let rhs_ptr = match rhs.get_type().size_of() {
+        Some(size) => compiler
+            .build_gc_malloc_call(size)
+            .expect("Could not allocate memory to value."),
+        _ => {
+            return Err(BackendError {
+                message: "Invalid RHS of assignment.",
+            })
+        }
+    }
+    .into_pointer_value();
+    let rhs_ptr = compiler
+        .builder
+        .build_pointer_cast(
+            rhs_ptr,
+            any_type_to_basic_type(rhs.get_type())
+                .expect("Invalid RHS of assignment.")
+                .ptr_type(AddressSpace::default()),
+            "",
+        )
+        .expect("Could not cast pointer.");
+
+    store_value(compiler, &rhs_ptr, &rhs)?;
+
+    let rhs_ptr_as_void_ptr = compiler
+        .builder
+        .build_pointer_cast(rhs_ptr, void_ptr_type, "")
+        .expect("Could not cast pointer to void type.")
+        .as_any_value_enum();
+
+    let params: Vec<_> = Vec::from([
+        subscript_value.as_any_value_enum(),
+        slice,
+        rhs_ptr_as_void_ptr,
+    ])
+    .into_iter()
+    .map(|arg| {
+        compiler
+            .convert_any_value_to_param_value(arg)
+            .expect("Invalid param type for subscript assignment.")
+    })
+    .collect();
+
+    let set_call = compiler.builder.build_call(set_fn, &params, "set");
+
+    match set_call {
+        Ok(res) => Ok(res.as_any_value_enum()),
+        Err(..) => Err(BackendError {
+            message: "Could not set subscript value.",
+        }),
+    }
+}
+
+/**
+ * Helper to handle string comparisons
+ */
+pub fn handle_str_compare<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    left: PointerValue<'ctx>,
+    right: PointerValue<'ctx>,
+    op: &CmpOp,
+) -> IntValue<'ctx> {
+    if op.is_eq() {
+        let str_eq_fn = compiler
+            .module
+            .get_function("str_eq")
+            .expect("str_eq is not defined.");
+        return compiler
+            .builder
+            .build_call(str_eq_fn, &[left.into(), right.into()], "")
+            .expect("Could not call str_eq.")
+            .as_any_value_enum()
+            .into_int_value();
+    }
+
+    let str_len_fn = compiler
+        .module
+        .get_function("str_len")
+        .expect("str_len is not defined.");
+    let left_len = compiler
+        .builder
+        .build_call(str_len_fn, &[left.into()], "left_len")
+        .expect("Could not call str_len.")
+        .as_any_value_enum()
+        .into_int_value();
+
+    let right_len = compiler
+        .builder
+        .build_call(str_len_fn, &[right.into()], "right_len")
+        .expect("Could not call str_len.")
+        .as_any_value_enum()
+        .into_int_value();
+
+    compiler
+        .builder
+        .build_int_compare(get_int_predicate(*op), left_len, right_len, "str_cmp")
+        .expect("Failed to generate comparison")
+}
 
 /**
  * Helper to handle predefined functions.
@@ -26,10 +354,12 @@ pub fn handle_predefined_functions<'ctx>(
     func_name: &str,
 ) -> IRGenResult<'ctx> {
     if func_name.eq("range") {
-        return build_range_call(compiler, args);
+        let res = build_range_call(compiler, args);
+        return res;
     }
     if func_name.eq("len") {
-        return build_len_call(compiler, args);
+        let res = build_len_call(compiler, args);
+        return res;
     }
 
     Err(BackendError {
@@ -104,6 +434,8 @@ pub fn get_llvm_type_name<'ctx>(
         return "".to_string();
     };
 
+    println!("value {:?}", value);
+
     let list_ptr_type = compiler
         .module
         .get_struct_type("struct.List")
@@ -114,11 +446,14 @@ pub fn get_llvm_type_name<'ctx>(
         .get_struct_type("struct.Range")
         .unwrap()
         .ptr_type(AddressSpace::default());
+    let str_ptr_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
 
     if value_as_ptr_type == list_ptr_type {
         return "list".to_string();
     } else if value_as_ptr_type == range_ptr_type {
         return "range".to_string();
+    } else if value_as_ptr_type == str_ptr_type {
+        return "str".to_string();
     }
 
     "".to_string()
@@ -184,6 +519,34 @@ pub fn is_iterable<'ctx>(compiler: &mut Compiler<'ctx>, value: &AnyValueEnum<'ct
         || val_ptr_type == iter_type.ptr_type(AddressSpace::default())
         || val_ptr_type == list_type.ptr_type(AddressSpace::default())
         || val_ptr_type == str_type;
+}
+
+/**
+ * Helper to build generic len call
+ */
+pub fn build_generic_len_call<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    args: &[AnyValueEnum<'ctx>],
+) -> IRGenResult<'ctx> {
+    if args.len() != 1 {
+        return Err(BackendError {
+            message: "len call takes only one argument.",
+        });
+    }
+    let object_len_fn = compiler
+        .module
+        .get_function("object_len")
+        .expect("object_len is not defined.");
+    let param = compiler
+        .convert_any_value_to_param_value(args[0])
+        .expect("Could not convert value to param.");
+
+    let object_len_call = compiler
+        .builder
+        .build_call(object_len_fn, &[param], "")
+        .expect("Could not call object_len.");
+
+    Ok(object_len_call.as_any_value_enum())
 }
 
 /**

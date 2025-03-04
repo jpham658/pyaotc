@@ -15,8 +15,9 @@ use crate::astutils::get_iter_type_name;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
     allocate_variable, any_type_to_basic_type, build_range_call, build_typed_for_loop_body,
-    get_list_element_enum, get_llvm_type, get_llvm_type_name, handle_global_assignment,
-    handle_predefined_functions, is_iterable, store_value,
+    create_object, get_list_element_enum, get_llvm_type, get_llvm_type_name, handle_attr_fn_call,
+    handle_global_assignment, handle_predefined_functions, handle_str_compare,
+    handle_subscript_assignment, is_iterable, store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
@@ -117,10 +118,22 @@ impl LLVMTypedCodegen for StmtFunctionDef {
         let llvm_arg_types: Vec<BasicMetadataTypeEnum<'_>> = arg_types
             .into_iter()
             .map(|arg_type| {
+                let list_ptr_type = compiler
+                    .module
+                    .get_struct_type("struct.List")
+                    .unwrap()
+                    .ptr_type(AddressSpace::default());
+                let range_ptr_type = compiler
+                    .module
+                    .get_struct_type("struct.Range")
+                    .unwrap()
+                    .ptr_type(AddressSpace::default());
                 match arg_type {
                     Type::ConcreteType(ConcreteValue::Int) => compiler.context.i64_type().into(),
                     Type::ConcreteType(ConcreteValue::Float) => compiler.context.f64_type().into(),
                     Type::ConcreteType(ConcreteValue::Bool) => compiler.context.bool_type().into(),
+                    Type::List(..) => list_ptr_type.into(),
+                    Type::Range => range_ptr_type.into(),
                     _ => {
                         compiler
                             .context
@@ -190,19 +203,42 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                     .builder
                     .build_alloca(v.get_type(), "")
                     .expect("Could not allocate memory for function argument.");
-                let _ = compiler.builder.build_store(v_ptr, v);
+                let _ = store_value(compiler, &v_ptr, &v.as_any_value_enum());
                 (k.clone(), v_ptr.as_any_value_enum())
             })
             .collect::<HashMap<_, _>>();
 
+        let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+        let mut arg_names = Vec::new();
+        for (arg_name, arg_val) in arg_map {
+            let generic_func_arg = compiler
+                .builder
+                .build_alloca(obj_ptr_type, "")
+                .expect("Could not allocate stack memory.")
+                .as_any_value_enum();
+
+            let arg = compiler
+                .builder
+                .build_load(arg_val.into_pointer_value(), "")
+                .expect("Could not load function argument.");
+            let arg_as_obj = create_object(compiler, arg.as_any_value_enum())
+                .expect("Could not create object for function argument.");
+
+            let _ = store_value(
+                compiler,
+                &generic_func_arg.into_pointer_value(),
+                &arg_as_obj,
+            );
+
+            compiler
+                .sym_table
+                .add_variable(&arg_name, Some(arg_val), Some(generic_func_arg));
+
+            arg_names.push(arg_name);
+        }
         {
             let mut func_args = compiler.func_args.borrow_mut();
-            for (arg_name, arg_val) in arg_map {
-                compiler
-                    .sym_table
-                    .add_variable(&arg_name, Some(arg_val), None);
-                func_args.push(arg_name);
-            }
+            func_args.extend(arg_names);
         }
 
         let mut ret_stmt_declared = false;
@@ -254,7 +290,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             compiler.func_args.borrow_mut().clear();
         }
 
-        // // Build generic function body
+        // Build generic function body
         let _ = self.generic_codegen(compiler)?;
 
         Ok(func_def.as_any_value_enum())
@@ -267,12 +303,19 @@ impl LLVMTypedCodegen for StmtAssign {
         compiler: &mut Compiler<'ctx>,
         types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
-        // TODO: Figure out how to deal with subscripts
+        if let Some(subscript) = self.targets[0].as_subscript_expr() {
+            let typed_res = handle_subscript_assignment(compiler, types, subscript, self);
+            if let Err(e) = self.generic_codegen(compiler) {
+                return Err(e);
+            }
+            return typed_res;
+        }
+
         let target_name = match &self.targets[0] {
             Expr::Name(exprname) => exprname.id.to_string(),
             _ => {
                 return Err(BackendError {
-                    message: "Left of an assignment must be a variable",
+                    message: "Left of an assignment must be a variable or a subscript.",
                 })
             }
         };
@@ -285,36 +328,74 @@ impl LLVMTypedCodegen for StmtAssign {
         };
 
         let generic_value_ptr = if !is_function_arg {
-            Some(self.value.generic_codegen(compiler)?)
+            match self.value.generic_codegen(compiler) {
+                Ok(res) => Some(res),
+                Err(..) => Some(create_object(compiler, typed_value)?),
+            }
         } else {
             None
         };
 
-        let target_ptr = if compiler.sym_table.is_global_scope() {
+        // TODO: Refactor to return both typed and generic target ptr, so we can add
+        // both to sym table.
+        if compiler.sym_table.is_global_scope() {
             handle_global_assignment(
                 compiler,
                 &target_name,
                 &Some(typed_value),
                 &generic_value_ptr,
             )?;
-            let (g_ptr, _) = compiler
-                .sym_table
-                .resolve_variable(&target_name)
-                .expect("Target should be defined.");
-            g_ptr.expect("Global pointer should not be none when compiling with types.")
         } else {
             match compiler.sym_table.resolve_variable(&target_name) {
-                Some((ptr, _)) => ptr.expect(
-                    "Variable is defined in this scope but doesn't have a corresponding pointer...",
-                ),
-                _ => allocate_variable(compiler, &target_name, &typed_value)?,
+                Some((existing_ptr, existing_generic_ptr)) => {
+                    let existing_ptr = existing_ptr
+                        .expect("Variable is defined but has no pointer.")
+                        .into_pointer_value();
+                    store_value(compiler, &existing_ptr, &typed_value)?;
+                    if let Some(generic) = &generic_value_ptr {
+                        if let Some(generic_ptr) = existing_generic_ptr {
+                            store_value(compiler, &generic_ptr.into_pointer_value(), &generic)?;
+                        } else {
+                            let ptr_to_generic =
+                                allocate_variable(compiler, &target_name, generic)?;
+                            store_value(compiler, &ptr_to_generic.into_pointer_value(), &generic)?;
+                        }
+                    }
+                }
+                _ => {
+                    let typed_ptr = allocate_variable(compiler, &target_name, &typed_value)?;
+                    let generic_ptr = if let Some(generic) = generic_value_ptr {
+                        Some(allocate_variable(compiler, &target_name, &generic)?)
+                    } else {
+                        None
+                    };
+                    compiler
+                        .sym_table
+                        .add_variable(&target_name, Some(typed_ptr), generic_ptr);
+                }
             }
         }
-        .into_pointer_value();
 
-        store_value(compiler, &target_ptr, &typed_value)?;
+        let (target_ptr, generic_target_ptr) = compiler
+            .sym_table
+            .resolve_variable(&target_name)
+            .expect("Target should be defined.");
 
-        Ok(target_ptr.as_any_value_enum())
+        store_value(
+            compiler,
+            &target_ptr
+                .expect("Pointer should be defined for typed variables in typed codegen phase.")
+                .into_pointer_value(),
+            &typed_value,
+        )?;
+
+        if let Some(ptr) = generic_target_ptr {
+            if let Some(val) = generic_value_ptr {
+                store_value(compiler, &ptr.into_pointer_value(), &val)?;
+            }
+        }
+
+        Ok(target_ptr.unwrap().as_any_value_enum())
     }
 }
 
@@ -672,7 +753,6 @@ impl LLVMTypedCodegen for ExprSubscript {
         }
 
         if let Some(element_type) = types.get(&self.range()) {
-            println!("element type of list {:?}", element_type);
             let llvm_element_type =
                 get_llvm_type(compiler, &element_type).expect("Invalid element type.");
             let llvm_element_type =
@@ -848,87 +928,96 @@ impl LLVMTypedCodegen for ExprCompare {
                     .expect("Could not compile comparator.")
             })
             .collect::<Vec<_>>();
-        let ops = self.ops.clone();
 
+        let ops = &self.ops;
         let op_and_comp = ops
             .into_iter()
             .zip(comparators.into_iter())
             .collect::<Vec<(_, _)>>();
+
         let mut conditions = Vec::new();
-
-        if left.is_vector_value() {
-            return Err(BackendError {
-                message: "Compare not implemented for list yet.",
-            });
-        }
-
+        // TODO: Add list, range, dict support
         let f64_type = compiler.context.f64_type();
+        let bool_type = compiler.context.bool_type();
+        let str_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+
         for (op, comp) in op_and_comp {
-            if comp.is_float_value() {
-                if left.get_type().is_int_type() {
-                    left = compiler
+            let (new_left, new_comp, type_mismatch) = match (left.get_type(), comp.get_type()) {
+                (lt, rt) if lt == rt => (left, comp, false),
+                (lt, AnyTypeEnum::FloatType(_)) if lt.is_int_type() => (
+                    compiler
                         .builder
                         .build_signed_int_to_float(left.into_int_value(), f64_type, "")
-                        .expect("Could not cast signed int to float.")
-                        .as_any_value_enum();
-                } else {
-                    // Types don't match so false straight away
-                    conditions.push(
-                        compiler
-                            .context
-                            .bool_type()
-                            .const_int(u64::from(false), false),
-                    );
-                    break;
-                }
+                        .expect("Could not cast int to float.")
+                        .as_any_value_enum(),
+                    comp,
+                    false,
+                ),
+                (AnyTypeEnum::FloatType(_), rt) if rt.is_int_type() => (
+                    left,
+                    compiler
+                        .builder
+                        .build_signed_int_to_float(comp.into_int_value(), f64_type, "")
+                        .expect("Could not cast int to float.")
+                        .as_any_value_enum(),
+                    false,
+                ),
+                _ => (left, comp, true),
+            };
+
+            if type_mismatch {
+                conditions.push(bool_type.const_int(0, false));
+                break;
             }
 
-            let new_comp = if left.is_float_value() && !comp.is_float_value() {
+            let llvm_comp = if new_left.is_float_value() {
                 compiler
                     .builder
-                    .build_signed_int_to_float(
-                        comp.into_int_value(),
-                        compiler.context.f64_type(),
+                    .build_float_compare(
+                        get_float_predicate(*op),
+                        new_left.into_float_value(),
+                        new_comp.into_float_value(),
                         "",
                     )
-                    .unwrap()
-                    .as_any_value_enum()
-            } else {
-                comp
-            };
-            let llvm_comp = if left.is_float_value() {
-                let float_predicate = get_float_predicate(op);
-                compiler.builder.build_float_compare(
-                    float_predicate,
-                    left.into_float_value(),
-                    new_comp.into_float_value(),
-                    "",
-                )
-            } else if left.is_int_value() {
-                let int_predicate = get_int_predicate(op);
-                compiler.builder.build_int_compare(
-                    int_predicate,
-                    left.into_int_value(),
-                    new_comp.into_int_value(),
-                    "",
+                    .expect("Failed to generate comparison")
+            } else if new_left.is_int_value() {
+                compiler
+                    .builder
+                    .build_int_compare(
+                        get_int_predicate(*op),
+                        new_left.into_int_value(),
+                        new_comp.into_int_value(),
+                        "",
+                    )
+                    .expect("Failed to generate comparison")
+            } else if new_left.get_type().is_pointer_type()
+                && new_left.get_type().into_pointer_type() == str_type
+            {
+                handle_str_compare(
+                    compiler,
+                    new_left.into_pointer_value(),
+                    new_comp.into_pointer_value(),
+                    op,
                 )
             } else {
                 return Err(BackendError {
-                    message: "Compare not implemented for sequences and sets yet.",
+                    message: "Comparison not implemented for sequences and sets yet.",
                 });
-            }
-            .expect("Could not compile comparator.");
+            };
             conditions.push(llvm_comp);
-            left = new_comp;
+            left = comp;
         }
 
-        let mut composite_comp = conditions[0];
-        for cond in conditions {
-            composite_comp = compiler
-                .builder
-                .build_and(composite_comp, cond, "")
-                .expect("Could not build 'and' for compare.");
-        }
+        let composite_comp = conditions
+            .into_iter()
+            .reduce(|acc, cond| {
+                compiler
+                    .builder
+                    .build_and(acc, cond, "")
+                    .expect("Could not build 'and' condition.")
+            })
+            .unwrap_or(bool_type.const_int(1, false));
+
         Ok(composite_comp.as_any_value_enum())
     }
 }
@@ -1076,6 +1165,19 @@ impl LLVMTypedCodegen for ExprCall {
         compiler: &mut Compiler<'ctx>,
         types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
+        if let Some(attr) = self.func.as_attribute_expr() {
+            let args = self
+                .args
+                .iter()
+                .map(|arg| arg.typed_codegen(compiler, types))
+                .collect::<Result<Vec<_>, BackendError>>()?;
+            let typed_attr_call = handle_attr_fn_call(compiler, types, attr, &args);
+            if let Err(e) = self.generic_codegen(compiler) {
+                return Err(e);
+            }
+            return typed_attr_call;
+        }
+
         let func_name = self
             .func
             .as_name_expr()
@@ -1157,18 +1259,19 @@ impl LLVMTypedCodegen for ExprName {
         match self.ctx {
             ExprContext::Load | ExprContext::Store => {
                 let name = self.id.as_str();
+
                 let var_ptr = compiler.sym_table.resolve_variable(name);
 
                 match var_ptr {
-                    Some((ptr, _)) => {
-                        if ptr.is_none() {
+                    Some((typed_ptr, _)) => {
+                        if typed_ptr.is_none() {
                             return Err(
                                 BackendError { message: "Variable is defined in this scope but doesn't have a corresponding pointer..." }
                             );
                         }
                         let load = compiler
                             .builder
-                            .build_load(ptr.unwrap().into_pointer_value(), name)
+                            .build_load(typed_ptr.unwrap().into_pointer_value(), name)
                             .expect("Could not load variable.");
                         Ok(load.as_any_value_enum())
                     }

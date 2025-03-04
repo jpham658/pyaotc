@@ -4,6 +4,7 @@ use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
+use rustpython_ast::ExprSubscript;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
     ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFor,
@@ -13,8 +14,9 @@ use rustpython_parser::ast::{
 use crate::astutils::GetReturnStmts;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, any_type_to_basic_type, build_generic_for_loop_body,
-    build_generic_range_call, get_list_element_enum, handle_global_assignment, store_value,
+    allocate_variable, any_type_to_basic_type, build_generic_for_loop_body, build_generic_len_call,
+    build_generic_range_call, create_object, get_list_element_enum, handle_global_assignment,
+    store_value,
 };
 use crate::compiler_utils::to_any_type::ToAnyType;
 
@@ -100,6 +102,7 @@ impl LLVMGenericCodegen for StmtFunctionDef {
         }
 
         let func_name = format!("{}_g", self.name.as_str());
+
         let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
         let void_type = compiler.context.void_type();
         let bool_type = compiler.context.bool_type();
@@ -209,6 +212,29 @@ impl LLVMGenericCodegen for StmtFunctionDef {
 
 impl LLVMGenericCodegen for StmtAssign {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
+        if let Some(subscript) = self.targets[0].as_subscript_expr() {
+            let subscript_value = subscript.value.generic_codegen(compiler)?;
+            let slice = subscript.slice.generic_codegen(compiler)?;
+            let value = self.value.generic_codegen(compiler)?;
+            let object_set_fn = compiler
+                .module
+                .get_function("object_set")
+                .expect("object_set is not defined.");
+            let params: Vec<_> = Vec::from([subscript_value, slice, value])
+                .into_iter()
+                .map(|arg| {
+                    compiler
+                        .convert_any_value_to_param_value(arg)
+                        .expect("Could not convert value to param.")
+                })
+                .collect();
+            let object_set_call = compiler
+                .builder
+                .build_call(object_set_fn, &params, "")
+                .expect("Could not call object_set.");
+            return Ok(object_set_call.as_any_value_enum());
+        }
+
         let target_name = match &self.targets[0] {
             Expr::Name(exprname) => exprname.id.as_str(),
             _ => {
@@ -229,15 +255,20 @@ impl LLVMGenericCodegen for StmtAssign {
             g_obj_ptr.expect("Global obj pointer should not be none when compiling without types.")
         } else {
             match compiler.sym_table.resolve_variable(&target_name) {
-                Some((ptr, _)) => ptr.expect(
+                Some((_, ptr)) => {
+                    ptr.expect(
                     "Variable is defined in this scope but doesn't have a corresponding pointer...",
-                ),
+                )
+                }
                 _ => allocate_variable(compiler, &target_name, &value)?,
             }
         }
         .into_pointer_value();
 
         store_value(compiler, &target_ptr, &value)?;
+        compiler
+            .sym_table
+            .add_variable(&target_name, None, Some(target_ptr.as_any_value_enum()));
 
         Ok(target_ptr.as_any_value_enum())
     }
@@ -418,7 +449,6 @@ impl LLVMGenericCodegen for StmtWhile {
 impl LLVMGenericCodegen for StmtIf {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let test = self.test.generic_codegen(compiler)?;
-
         let main = compiler.builder.get_insert_block().unwrap();
         let iftrue = compiler.context.insert_basic_block_after(main, "iftrue");
         let iffalse = if self.orelse.is_empty() {
@@ -433,14 +463,14 @@ impl LLVMGenericCodegen for StmtIf {
             ifend
         };
 
+        let is_truthy_fn = compiler.module.get_function("object_as_truthy").unwrap();
         let test_as_bool = if test.is_int_value() {
             test.into_int_value()
         } else {
-            let is_truthy_fn = compiler.module.get_function("obj_as_truthy").unwrap();
             compiler
                 .builder
                 .build_call(is_truthy_fn, &[test.into_pointer_value().into()], "")
-                .expect("Could not call obj_as_truthy.")
+                .expect("Could not call object_as_truthy.")
                 .as_any_value_enum()
                 .into_int_value()
         };
@@ -528,10 +558,36 @@ impl LLVMGenericCodegen for Expr {
             Expr::UnaryOp(unop) => unop.generic_codegen(compiler),
             Expr::IfExp(ifexp) => ifexp.generic_codegen(compiler),
             Expr::List(list) => list.generic_codegen(compiler),
+            Expr::Subscript(subscript) => subscript.generic_codegen(compiler),
             _ => Err(BackendError {
                 message: "Not implemented yet...",
             }),
         }
+    }
+}
+
+impl LLVMGenericCodegen for ExprSubscript {
+    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
+        let value = self.value.generic_codegen(compiler)?;
+        let slice = self.slice.generic_codegen(compiler)?;
+        let object_index_fn = compiler
+            .module
+            .get_function("object_index")
+            .expect("object_index is not defined.");
+        let params: Vec<_> = Vec::from([value, slice])
+            .into_iter()
+            .map(|arg| {
+                compiler
+                    .convert_any_value_to_param_value(arg)
+                    .expect("Could not convert value to param.")
+            })
+            .collect();
+        let object_index_call = compiler
+            .builder
+            .build_call(object_index_fn, &params, "")
+            .expect("Could not call object_index.");
+
+        Ok(object_index_call.as_any_value_enum())
     }
 }
 
@@ -673,47 +729,37 @@ impl LLVMGenericCodegen for ExprCompare {
         let mut left = self.left.generic_codegen(compiler)?;
         let comparators = self
             .comparators
-            .clone()
-            .into_iter()
-            .map(|comp| {
-                comp.generic_codegen(compiler)
-                    .expect("Could not compile comparator.")
-            })
-            .collect::<Vec<_>>();
-        let ops = self.ops.clone();
+            .iter()
+            .map(|comp| comp.generic_codegen(compiler))
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let op_and_comp = ops
-            .into_iter()
-            .zip(comparators.into_iter())
-            .collect::<Vec<(_, _)>>();
+        let ops = &self.ops;
+        let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
 
         let mut conditions = Vec::new();
 
-        for (op, comp) in op_and_comp {
-            if comp.is_vector_value() {
-                return Err(BackendError {
-                    message: "Invalid type for right compare value.",
-                });
-            }
+        for (op, comp) in ops.iter().zip(comparators.iter()) {
             let g_cmpop_fn_name = format!("{:?}", op);
+
             let g_cmpop_fn = match compiler.module.get_function(&g_cmpop_fn_name) {
                 Some(func) => func,
                 None => {
-                    let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
-                    let params: Vec<_> = [obj_ptr_type, obj_ptr_type]
-                        .into_iter()
+                    let params = [obj_ptr_type, obj_ptr_type]
+                        .iter()
                         .map(|p| {
                             compiler
                                 .convert_any_type_to_param_type(p.as_any_type_enum())
                                 .unwrap()
                         })
-                        .collect();
+                        .collect::<Vec<_>>();
+
                     let g_op_fn_type = compiler.context.bool_type().fn_type(&params, false);
                     compiler
                         .module
                         .add_function(&g_cmpop_fn_name, g_op_fn_type, None)
                 }
             };
+
             let llvm_comp = compiler
                 .builder
                 .build_call(
@@ -722,24 +768,24 @@ impl LLVMGenericCodegen for ExprCompare {
                         BasicMetadataValueEnum::PointerValue(left.into_pointer_value()),
                         BasicMetadataValueEnum::PointerValue(comp.into_pointer_value()),
                     ],
-                    "",
+                    "cmp_result",
                 )
                 .expect(format!("Could not perform generic {:?}.", op).as_str())
                 .as_any_value_enum();
             conditions.push(llvm_comp.into_int_value());
-            left = llvm_comp.as_any_value_enum();
+
+            left = llvm_comp;
         }
 
-        let mut composite_comp = conditions[0];
-
-        for cond in conditions {
-            // Result from comparisons are always booleans, so store them as such
-            let cond = cond;
-            composite_comp = compiler
-                .builder
-                .build_and(composite_comp, cond, "")
-                .expect("Could not build 'and' for compare.");
-        }
+        let composite_comp = conditions
+            .into_iter()
+            .reduce(|acc, cond| {
+                compiler
+                    .builder
+                    .build_and(acc, cond, "")
+                    .expect("Could not build 'and' condition.")
+            })
+            .unwrap_or(compiler.context.bool_type().const_int(1, false));
 
         Ok(composite_comp.as_any_value_enum())
     }
@@ -755,7 +801,7 @@ impl LLVMGenericCodegen for ExprUnaryOp {
                 let param = compiler
                     .convert_any_type_to_param_type(obj_ptr_type.as_any_type_enum())
                     .unwrap();
-                let g_op_fn_type = obj_ptr_type.fn_type(&[param], false);
+                let g_op_fn_type = compiler.context.bool_type().fn_type(&[param], false);
                 compiler
                     .module
                     .add_function(&g_uop_name, g_op_fn_type, None)
@@ -773,46 +819,103 @@ impl LLVMGenericCodegen for ExprUnaryOp {
 
 impl LLVMGenericCodegen for ExprBoolOp {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
-        let values = self
+        let op_name = format!("{:?}", self.op);
+
+        let bool_op_fn = match compiler.module.get_function(&op_name) {
+            Some(func) => func,
+            None => {
+                let bool_op_fn_type = compiler
+                    .context
+                    .bool_type()
+                    .fn_type(&[compiler.context.i32_type().into()], true);
+                compiler
+                    .module
+                    .add_function(&op_name, bool_op_fn_type, None)
+            }
+        };
+
+        let arg_count = compiler
+            .context
+            .i32_type()
+            .const_int(self.values.len() as u64, false);
+
+        let mut args: Vec<_> = self
             .values
-            .clone()
-            .into_iter()
-            .map(|val| val.generic_codegen(compiler).unwrap())
-            .collect::<Vec<_>>();
+            .iter()
+            .map(|arg| {
+                let codegen_res = arg.generic_codegen(compiler).unwrap();
+                let codegen_res = if codegen_res.is_int_value() {
+                    create_object(compiler, codegen_res).expect("Could not create object.")
+                } else {
+                    codegen_res
+                };
+                compiler
+                    .convert_any_value_to_param_value(codegen_res)
+                    .expect("Could not convert value to param.")
+            })
+            .collect();
 
-        let true_val = compiler
-            .context
-            .bool_type()
-            .const_int(u64::from(true), false);
-        let false_val = compiler
-            .context
-            .bool_type()
-            .const_int(u64::from(false), false);
-        let res;
+        args.insert(
+            0,
+            compiler
+                .convert_any_value_to_param_value(arg_count.as_any_value_enum())
+                .unwrap(),
+        );
 
-        if self.op.is_and() {
-            for val in values {
-                if val == false_val {
-                    return Ok(false_val.as_any_value_enum());
-                }
-            }
-            res = true_val;
-        } else {
-            // op is "or"
-            for val in values {
-                if val == true_val {
-                    return Ok(true_val.as_any_value_enum());
-                }
-            }
-            res = false_val;
-        }
+        let result = compiler
+            .builder
+            .build_call(bool_op_fn, &args, "bool_op_result")
+            .expect(format!("Could not perform generic {:?}", self.op).as_str())
+            .as_any_value_enum();
 
-        Ok(res.as_any_value_enum())
+        Ok(result)
     }
 }
 
 impl LLVMGenericCodegen for ExprCall {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
+        if let Some(attr) = self.func.as_attribute_expr() {
+            // validate args
+            // codegen args
+            // call object_append
+            if self.args.len() != 1 {
+                return Err(BackendError {
+                    message: "Incorrect number of arguments given to append call.",
+                });
+            }
+            let args: Vec<_> = self
+                .args
+                .iter()
+                .map(|arg| {
+                    let arg_codegen = arg.generic_codegen(compiler).unwrap();
+                    if arg_codegen.is_int_value() {
+                        create_object(compiler, arg_codegen).expect("Could not create object.")
+                    } else {
+                        arg_codegen
+                    }
+                })
+                .collect();
+            let value_obj = attr.value.generic_codegen(compiler)?;
+            let appended_val = args[0];
+            let object_append_fn = compiler
+                .module
+                .get_function("object_append")
+                .expect("object_append is not defined.");
+            let params: Vec<_> = Vec::from([value_obj, appended_val])
+                .into_iter()
+                .map(|arg| {
+                    compiler
+                        .convert_any_value_to_param_value(arg)
+                        .expect("Could not convert value to param.")
+                })
+                .collect();
+            let object_append_call = compiler
+                .builder
+                .build_call(object_append_fn, &params, "")
+                .expect("Could not call object_append.");
+            return Ok(object_append_call.as_any_value_enum());
+        }
+
         let func_name = self
             .func
             .as_name_expr()
@@ -829,6 +932,13 @@ impl LLVMGenericCodegen for ExprCall {
                 .map(|arg| arg.generic_codegen(compiler))
                 .collect::<Result<Vec<_>, BackendError>>()?;
             return build_generic_range_call(compiler, args);
+        } else if func_name.eq("len") {
+            let args = self
+                .args
+                .iter()
+                .map(|arg| arg.generic_codegen(compiler))
+                .collect::<Result<Vec<_>, BackendError>>()?;
+            return build_generic_len_call(compiler, &args);
         } else {
             let generic_fn_name = format!("{}_g", func_name);
             function = compiler
@@ -846,11 +956,18 @@ impl LLVMGenericCodegen for ExprCall {
         }
 
         // generic_codegen args if we have any
-        let args = self
+        let args: Vec<_> = self
             .args
             .iter()
-            .map(|arg| arg.generic_codegen(compiler))
-            .collect::<Result<Vec<_>, BackendError>>()?;
+            .map(|arg| {
+                let arg_codegen = arg.generic_codegen(compiler).unwrap();
+                if arg_codegen.is_int_value() {
+                    create_object(compiler, arg_codegen).expect("Could not create object.")
+                } else {
+                    arg_codegen
+                }
+            })
+            .collect();
 
         let mut args: Vec<BasicMetadataValueEnum<'_>> = args
             .into_iter()
@@ -914,9 +1031,12 @@ impl LLVMGenericCodegen for ExprName {
                             .expect("Could not load Object pointer.");
                         return Ok(load.as_any_value_enum());
                     }
-                    _ => Err(BackendError {
-                        message: "Variable {name} is not defined.",
-                    }),
+                    _ => {
+                        println!("could not find variable {name}");
+                        Err(BackendError {
+                            message: "Variable {name} is not defined.",
+                        })
+                    }
                 }
             }
             ExprContext::Del => Err(BackendError {

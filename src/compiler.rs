@@ -62,7 +62,7 @@ impl<'ctx> Compiler<'ctx> {
 
         // Initialise Boehm GC
         let gc_init = self.module.get_function("GC_init").unwrap();
-        let _ = self.builder.build_call(gc_init, &[], "gc_init_call");
+        let _ = self.builder.build_call(gc_init, &[], "");
 
         for statement in ast {
             match statement.typed_codegen(self, &type_db) {
@@ -192,7 +192,14 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let gcc_status = Command::new("gcc")
-            .args([&obj_file_path, "-lgc", "-o", &file_name, "-no-pie"])
+            .args([
+                &obj_file_path,
+                "-lm",
+                "-lgc",
+                "-no-pie",
+                "-o",
+                &file_name,
+            ])
             .status()
             .map_err(|e| format!("Failed to execute gcc: {}", e))?;
 
@@ -219,8 +226,10 @@ impl<'ctx> Compiler<'ctx> {
      */
     fn setup_compiler(&self) {
         self.setup_obj_constructors();
+        self.setup_obj_fns();
         self.setup_print_fns();
         self.setup_gc_fns();
+        self.setup_str_fns();
         self.setup_list_fns();
         self.setup_range_fns();
         self.setup_iter_fns();
@@ -265,14 +274,49 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    fn setup_obj_fns(&self) {
+        let obj_ptr_type = self.object_type.ptr_type(AddressSpace::default());
+        let obj_fns = Vec::from([
+            ("object_index", Vec::from([obj_ptr_type, obj_ptr_type])),
+            (
+                "object_set",
+                Vec::from([obj_ptr_type, obj_ptr_type, obj_ptr_type]),
+            ),
+            ("object_append", Vec::from([obj_ptr_type, obj_ptr_type])),
+            ("object_len", Vec::from([obj_ptr_type])),
+        ]);
+        for (fn_name, fn_args) in obj_fns {
+            let param_types: Vec<_> = fn_args
+                .iter()
+                .map(|arg| {
+                    self.convert_any_type_to_param_type(arg.as_any_type_enum())
+                        .unwrap()
+                })
+                .collect();
+            let fn_type = obj_ptr_type.fn_type(&param_types, false);
+            let _ = self.module.add_function(&fn_name, fn_type, None);
+        }
+        let obj_as_truthy_fn_type = self.context.bool_type().fn_type(
+            &[self
+                .convert_any_type_to_param_type(obj_ptr_type.as_any_type_enum())
+                .unwrap()],
+            false,
+        );
+        let _ = self
+            .module
+            .add_function("object_as_truthy", obj_as_truthy_fn_type, None);
+    }
+
     fn setup_iter_fns(&self) {
         let iterator = self.module.get_struct_type("struct.Iterator").unwrap();
         let range = self.context.get_struct_type("struct.Range").unwrap();
         let list = self.context.get_struct_type("struct.List").unwrap();
+        let str = self.context.i8_type();
 
         let iter_fns = Vec::from([
             ("range", range.ptr_type(AddressSpace::default())),
             ("list", list.ptr_type(AddressSpace::default())),
+            ("str", str.ptr_type(AddressSpace::default())),
         ]);
 
         for (fn_name_prefix, fn_param) in iter_fns {
@@ -282,6 +326,20 @@ impl<'ctx> Compiler<'ctx> {
             let fn_name = format!("{fn_name_prefix}_iter");
             let _ = self.module.add_function(&fn_name, fn_type, None);
         }
+    }
+
+    pub fn setup_str_fns(&self) {
+        let sizet_type = self.context.i64_type();
+        let str_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let bool_type = self.context.bool_type();
+
+        let str_len_fn_type = sizet_type.fn_type(&[str_type.into()], false);
+        let str_index_fn_type = str_type.fn_type(&[str_type.into(), sizet_type.into()], false);
+        let str_eq_fn_type = bool_type.fn_type(&[str_type.into(), str_type.into()], false);
+        self.module.add_function("str_len", str_len_fn_type, None);
+        self.module
+            .add_function("str_index", str_index_fn_type, None);
+        self.module.add_function("str_eq", str_eq_fn_type, None);
     }
 
     pub fn setup_range_fns(&self) {
@@ -499,11 +557,6 @@ impl<'ctx> Compiler<'ctx> {
             ),
             None,
         );
-        self.module.add_function(
-            "GC_free",
-            void_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
-            None,
-        );
         self.module
             .add_function("GC_gcollect", void_type.fn_type(&[], false), None);
         self.module.add_function(
@@ -521,32 +574,9 @@ impl<'ctx> Compiler<'ctx> {
             None,
         );
         self.module.add_function(
-            "GC_set_max_heap_size",
-            void_type.fn_type(&[BasicMetadataTypeEnum::IntType(i64_type)], false),
-            None,
-        );
-        self.module.add_function(
             "GC_size",
             i64_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
             None,
         );
-        self.module.add_function(
-            "GC_base",
-            i8_ptr_type.fn_type(&[BasicMetadataTypeEnum::PointerType(i8_ptr_type)], false),
-            None,
-        );
-        self.module.add_function(
-            "GC_malloc_uncollectable",
-            i8_ptr_type.fn_type(&[BasicMetadataTypeEnum::IntType(i64_type)], false),
-            None,
-        );
-        self.module
-            .add_function("GC_get_heap_size", i64_type.fn_type(&[], false), None);
-        self.module
-            .add_function("GC_get_free_bytes", i64_type.fn_type(&[], false), None);
-        self.module
-            .add_function("GC_get_bytes_since_gc", i64_type.fn_type(&[], false), None);
-        self.module
-            .add_function("GC_get_total_bytes", i64_type.fn_type(&[], false), None);
     }
 }

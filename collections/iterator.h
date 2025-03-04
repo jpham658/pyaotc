@@ -11,7 +11,8 @@ typedef intptr_t word;
 typedef enum
 {
     RangeIter,
-    ListIter
+    ListIter,
+    StringIter,
 } IteratorType;
 
 typedef struct
