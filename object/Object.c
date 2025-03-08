@@ -148,7 +148,58 @@ Object *new_iterator(Iterator *iter)
 Object *new_list(List *list)
 {
     HeapObject *result = (HeapObject *)GC_malloc(sizeof *result);
-    *result = (HeapObject){.type = ListT, .list = list};
+    List *list_obj = create_list(sizeof(Object *), LIST_OBJ);
+    for (word i = 0; i < list->length; i++)
+    {
+        void *element = list_index(list, i);
+        Object *boxed_element = NULL;
+        switch (list->elt_type)
+        {
+        case LIST_INT:
+        {
+            word int_value = *(word *)element;
+            boxed_element = new_int(int_value);
+            break;
+        }
+        case LIST_BOOL:
+        {
+            bool bool_value = *(bool *)element;
+            boxed_element = new_bool(bool_value);
+            break;
+        }
+        case LIST_FLOAT:
+        {
+            double float_value = *(double *)element;
+            boxed_element = new_float(float_value);
+            break;
+        }
+        case LIST_STRING:
+        {
+            const char *str_value = *(const char **)element;
+            boxed_element = new_str(str_value);
+            break;
+        }
+        case LIST_LIST:
+        {
+            List *list_value = *(List **)element;
+            boxed_element = new_list(list_value);
+            break;
+        }
+        case LIST_RANGE:
+        {
+            Range *range_value = *(Range **)element;
+            boxed_element = new_range(range_value);
+            break;
+        }
+        default:
+        {
+            boxed_element = *(Object **)element;
+            break;
+        }
+        }
+        list_append(list_obj, &boxed_element);
+    }
+    *result = (HeapObject){.type = ListT, .list = list_obj};
     return object_from_address(result);
 }
 

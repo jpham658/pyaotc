@@ -18,6 +18,7 @@ use rustpython_parser::{
 };
 use std::{env, fs, path::Path};
 use type_inference::{free_type_vars_in_type_env, infer_stmts, NodeTypeDB, TypeEnv, TypeInferrer};
+use uuid::Uuid;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -52,7 +53,7 @@ fn main() {
 
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
-            print_ast(&ast);
+            // print_ast(&ast);
             // normal type inference
             infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
 

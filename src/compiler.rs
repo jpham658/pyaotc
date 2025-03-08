@@ -5,6 +5,7 @@ use inkwell::{builder::Builder, context::Context, module::Module};
 use rustpython_parser::ast::Stmt;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs::{self, File};
 use std::path::Path;
 use std::process::{exit, Command};
 
@@ -82,15 +83,27 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_return(Some(&i32_type.const_int(0, false)));
 
-        let ll_file_path = format!("outputs/{file_name}.ll");
+        let temp_dir = format!("outputs/{}", file_name);
+        let ll_file_path = format!("{}/{}.ll", temp_dir, file_name);
         let output = Path::new(ll_file_path.as_str());
 
         match self.module.print_to_file(output) {
             Ok(..) => println!(".ll file found at {}", output.display()),
-            Err(e) => println!("Could not generate .ll file: {}", e),
+            Err(..) => {
+                if let Err(e) = fs::create_dir_all(&temp_dir)
+                    .map_err(|e| format!("Failed to create temp directory: {}", e))
+                {
+                    eprintln!("Failed to create {}: {}", &temp_dir, e);
+                }
+
+                if let Err(e) = File::create(&ll_file_path) {
+                    eprintln!("Failed to create test file: {}. Path: {}", e, ll_file_path);
+                }
+                let _ = self.module.print_to_file(output);
+            }
         }
 
-        match self.compile_to_binary(&file_name, &ll_file_path) {
+        match self.compile_to_binary(&file_name, &ll_file_path, &temp_dir) {
             Ok(..) => {}
             Err(e) => panic!("CompileError: {}", e),
         }
@@ -134,24 +147,32 @@ impl<'ctx> Compiler<'ctx> {
 
         // self.dump_module();
 
-        let ll_file_path = format!("outputs/{file_name}.ll");
+        let temp_dir = format!("outputs/{}", file_name);
+        let ll_file_path = format!("{}/{}.ll", temp_dir, file_name);
         let output = Path::new(&ll_file_path);
 
         match self.module.print_to_file(output) {
             Ok(..) => println!(".ll file found at {}", output.display()),
-            Err(e) => println!("Could not generate .ll file: {}", e),
+            Err(e) => {
+                let _ = fs::create_dir_all(&output)
+                    .map_err(|e| format!("Failed to create temp directory: {}", e));
+            }
         }
 
-        match self.compile_to_binary(&file_name, &ll_file_path) {
+        match self.compile_to_binary(&file_name, &ll_file_path, &temp_dir) {
             Ok(..) => {}
             Err(e) => panic!("CompileError: {}", e),
         }
     }
 
-    // TODO: Refactor error handling to CompileError
-    fn compile_to_binary(&self, file_name: &str, ll_file_path: &str) -> Result<(), String> {
-        // link generated .ll file to generic LLVM code file
+    fn compile_to_binary(
+        &self,
+        file_name: &str,
+        ll_file_path: &str,
+        temp_dir: &str,
+    ) -> Result<(), String> {
         let build_status = Command::new("./build_prereq_llvm.sh")
+            .args([file_name])
             .status()
             .expect("Failed to start build_prereq_llvm.sh");
 
@@ -162,15 +183,13 @@ impl<'ctx> Compiler<'ctx> {
 
         println!("Successfully ran build_prereq_llvm.sh");
 
-        let prereq_llvm_file = "outputs/prereq_llvm.ll";
-        let linked_llvm_file = format!("outputs/{file_name}_final.ll");
+        let prereq_llvm_file = format!("{}/prereq_llvm.ll", temp_dir);
+        let linked_llvm_file = format!("{}/{}_final.ll", temp_dir, file_name);
+
+        println!("prereq_llvm file @ {}", prereq_llvm_file);
+
         let link_status = Command::new("llvm-link")
-            .args([
-                &prereq_llvm_file,
-                &ll_file_path,
-                "-o",
-                &linked_llvm_file.as_str(),
-            ])
+            .args([&prereq_llvm_file, ll_file_path, "-o", &linked_llvm_file])
             .status()
             .expect("Failed to start llvm-link");
 
@@ -181,7 +200,8 @@ impl<'ctx> Compiler<'ctx> {
 
         println!("Successfully linked .ll files.");
 
-        let obj_file_path = format!("outputs/{file_name}");
+        let obj_file_path = format!("{}/{}.o", temp_dir, file_name);
+
         let llc_status = Command::new("llc")
             .args(["-filetype=obj", &linked_llvm_file, "-o", &obj_file_path])
             .status()
@@ -192,14 +212,7 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let gcc_status = Command::new("gcc")
-            .args([
-                &obj_file_path,
-                "-lm",
-                "-lgc",
-                "-no-pie",
-                "-o",
-                &file_name,
-            ])
+            .args([&obj_file_path, "-lm", "-lgc", "-no-pie", "-o", &file_name])
             .status()
             .map_err(|e| format!("Failed to execute gcc: {}", e))?;
 
@@ -208,9 +221,10 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         println!(
-            "Successfully compiled to binary, try running your program with ./{}!",
+            "Successfully compiled to binary! Try running your program with ./{}",
             &file_name
         );
+
         Ok(())
     }
 

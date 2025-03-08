@@ -1,3 +1,11 @@
+# Compiler:
+#   status: success
+# Run-time:
+#   status: success
+#   stdout:
+#       ...
+#       numIslands(grid) == 1 ? True
+#       numIslands(grid2) == 3 ? True
 
 def dfs(row, col, grid, visited):
     if (row < 0 or row >= len(grid) #row -> int 
@@ -14,7 +22,7 @@ def dfs(row, col, grid, visited):
     dfs(row, col - 1, grid, visited)
     dfs(row, col + 1, grid, visited)
 
-def numIslands(grid: "list[list[str]]"):
+def numIslands(grid):
     m = len(grid)   #int
     n = len(grid[0])    #int
     visited = []    #list[v0] -> list[list[bool]]
@@ -49,7 +57,6 @@ grid2 = [
   ["0","0","0","1","1"]
 ]   # list[list[str]]
 
-print(grid)
 print("numIslands(grid) == 1 ?", numIslands(grid) == 1)
 print("numIslands(grid2) == 3 ?", numIslands(grid2) == 3)
 

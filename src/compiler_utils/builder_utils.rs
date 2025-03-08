@@ -412,7 +412,6 @@ pub fn get_list_element_enum<'ctx>(
         if llvm_type_as_ptr == str_type {
             return Some(enum_type.const_int(3, false));
         } else if llvm_type_as_ptr == list_type.ptr_type(AddressSpace::default()) {
-            println!("element type is list");
             return Some(enum_type.const_int(5, false));
         } else if llvm_type_as_ptr == range_type.ptr_type(AddressSpace::default()) {
             return Some(enum_type.const_int(6, false));
@@ -433,8 +432,6 @@ pub fn get_llvm_type_name<'ctx>(
     } else {
         return "".to_string();
     };
-
-    println!("value {:?}", value);
 
     let list_ptr_type = compiler
         .module
@@ -990,8 +987,11 @@ pub fn build_typed_for_loop_body<'ctx>(
             message: "Target type is not defined.",
         });
     };
+
+    // TODO: Add generic version of target ptr by loading the value and boxing it with create_object()
     let target =
         build_iter_increment(compiler, iter_ptr, next_func, target_type)?.into_pointer_value();
+
     compiler
         .sym_table
         .add_variable(target_name, Some(target.as_any_value_enum()), None);
@@ -1054,14 +1054,15 @@ fn initialise_global_variable<'ctx>(
         .add_global(typ, Some(AddressSpace::default()), target_name);
 
     match value.get_type() {
-        AnyTypeEnum::FloatType(..) => global.set_initializer(&value.into_float_value()),
-        AnyTypeEnum::IntType(..) => global.set_initializer(&value.into_int_value()),
+        AnyTypeEnum::FloatType(..) => {
+            global.set_initializer(&compiler.context.f64_type().const_zero())
+        }
+        AnyTypeEnum::IntType(..) => {
+            global.set_initializer(&compiler.context.i64_type().const_zero())
+        }
         AnyTypeEnum::PointerType(p) => {
             global.set_initializer(&p.const_null());
-            store_value(compiler, &global.as_pointer_value(), value)?;
         }
-        AnyTypeEnum::ArrayType(..) => global.set_initializer(&value.into_array_value()),
-        AnyTypeEnum::VectorType(..) => global.set_initializer(&value.into_vector_value()),
         _ => {
             return Err(BackendError {
                 message: "Unsupported r-value type.",
@@ -1069,6 +1070,7 @@ fn initialise_global_variable<'ctx>(
         }
     }
 
+    store_value(compiler, &global.as_pointer_value(), value)?;
     Ok(global.as_pointer_value().as_any_value_enum())
 }
 

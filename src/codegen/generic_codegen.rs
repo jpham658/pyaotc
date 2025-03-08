@@ -255,11 +255,9 @@ impl LLVMGenericCodegen for StmtAssign {
             g_obj_ptr.expect("Global obj pointer should not be none when compiling without types.")
         } else {
             match compiler.sym_table.resolve_variable(&target_name) {
-                Some((_, ptr)) => {
-                    ptr.expect(
+                Some((_, ptr)) => ptr.expect(
                     "Variable is defined in this scope but doesn't have a corresponding pointer...",
-                )
-                }
+                ),
                 _ => allocate_variable(compiler, &target_name, &value)?,
             }
         }
@@ -801,7 +799,11 @@ impl LLVMGenericCodegen for ExprUnaryOp {
                 let param = compiler
                     .convert_any_type_to_param_type(obj_ptr_type.as_any_type_enum())
                     .unwrap();
-                let g_op_fn_type = compiler.context.bool_type().fn_type(&[param], false);
+                let g_op_fn_type = if self.op.is_not() {
+                    compiler.context.bool_type().fn_type(&[param], false)
+                } else {
+                    obj_ptr_type.fn_type(&[param], false)
+                };
                 compiler
                     .module
                     .add_function(&g_uop_name, g_op_fn_type, None)

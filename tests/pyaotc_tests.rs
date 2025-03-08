@@ -30,7 +30,10 @@ fn main() {
 
             let binary_cmd = format!("./{}", binary_name);
             let runtime = Command::new(binary_cmd);
-            println!("Running runtime command: ./{} {}", binary_name, test_file_path);
+            println!(
+                "Running runtime command: ./{} {}",
+                binary_name, test_file_path
+            );
 
             vec![("Compiler", compiler), ("Run-time", runtime)]
         })

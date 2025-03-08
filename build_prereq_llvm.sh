@@ -1,7 +1,7 @@
 #!/bin/bash
 
-OUTPUT_DIR="prereq_llvm"
-OUTPUT_LL="outputs/prereq_llvm.ll"
+OUTPUT_DIR="outputs/$1/prereq_llvm"
+OUTPUT_LL="outputs/$1/prereq_llvm.ll"
 
 mkdir -p "$OUTPUT_DIR"
 

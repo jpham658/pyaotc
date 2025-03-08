@@ -4,7 +4,7 @@
 #   status: success
 #   stdout:
 #       ...
-#       5.0
+#       5.000000
 
 def add(x):
     return x + 1

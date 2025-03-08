@@ -1042,16 +1042,25 @@ impl LLVMTypedCodegen for ExprUnaryOp {
         match (self.op, operand) {
             (UnaryOp::Not, AnyValueEnum::IntValue(i)) => {
                 // TODO: Extend for sequence, set, and string types...
-                if i == false_val {
-                    Ok(truth_val.as_any_value_enum())
-                } else if i == truth_val {
-                    Ok(false_val.as_any_value_enum())
+                if i.get_type() == compiler.context.bool_type() {
+                    match compiler.builder.build_xor(truth_val, i, "not") {
+                        Ok(res) => Ok(res.as_any_value_enum()),
+                        Err(..) => Err(BackendError {
+                            message: "Could not perform not operation.",
+                        }),
+                    }
                 } else {
                     // i64 type
-                    if i == zero {
-                        Ok(truth_val.as_any_value_enum())
-                    } else {
-                        Ok(false_val.as_any_value_enum())
+                    match compiler.builder.build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        zero,
+                        i,
+                        "not",
+                    ) {
+                        Ok(res) => Ok(res.as_any_value_enum()),
+                        Err(..) => Err(BackendError {
+                            message: "Could not perform not operation.",
+                        }),
                     }
                 }
             }
@@ -1128,32 +1137,33 @@ impl LLVMTypedCodegen for ExprBoolOp {
             .map(|val| val.typed_codegen(compiler, types).unwrap())
             .collect::<Vec<_>>();
 
-        let true_val = compiler
-            .context
-            .bool_type()
-            .const_int(u64::from(true), false);
-        let false_val = compiler
-            .context
-            .bool_type()
-            .const_int(u64::from(false), false);
-        let res;
-
-        if self.op.is_and() {
-            for val in values {
-                if val == false_val {
-                    return Ok(false_val.as_any_value_enum());
-                }
-            }
-            res = true_val;
-        } else {
-            // op is "or"
-            for val in values {
-                if val == true_val {
-                    return Ok(true_val.as_any_value_enum());
-                }
-            }
-            res = false_val;
+        if values.len() < 2 {
+            return Err(BackendError {
+                message: "BoolOp must have at least 2 operands.",
+            });
         }
+
+        let res = if self.op.is_and() {
+            values
+                .clone()
+                .into_iter()
+                .fold(values[0].into_int_value(), |acc, val| {
+                    compiler
+                        .builder
+                        .build_and(acc, val.into_int_value(), "")
+                        .expect("Could not build and")
+                })
+        } else {
+            values
+                .clone()
+                .into_iter()
+                .fold(values[0].into_int_value(), |acc, val| {
+                    compiler
+                        .builder
+                        .build_or(acc, val.into_int_value(), "")
+                        .expect("Could not build and")
+                })
+        };
 
         Ok(res.as_any_value_enum())
     }
@@ -1352,22 +1362,21 @@ impl LLVMTypedCodegen for ExprBinOp {
         let op = self.op;
         let left = self.left.typed_codegen(compiler, types)?;
         let right = self.right.typed_codegen(compiler, types)?;
+        let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
 
-        if !left.is_float_value()
-            && !left.is_int_value()
-            && !left.is_pointer_value()
-            && !left.is_vector_value()
+        if left.get_type() == obj_ptr_type.as_any_type_enum()
+            || right.get_type() == obj_ptr_type.as_any_type_enum()
         {
+            return self.generic_codegen(compiler);
+        }
+
+        if !left.is_float_value() && !left.is_int_value() && !left.is_pointer_value() {
             return Err(BackendError {
                 message: "Invalid left operand for binary operator",
             });
         }
 
-        if !right.is_float_value()
-            && !right.is_int_value()
-            && !right.is_pointer_value()
-            && !right.is_vector_value()
-        {
+        if !right.is_float_value() && !right.is_int_value() && !right.is_pointer_value() {
             return Err(BackendError {
                 message: "Invalid right operand for binary operator.",
             });
@@ -1502,6 +1511,7 @@ impl LLVMTypedCodegen for ExprBinOp {
 
 // HELPER FUNCTIONS
 
+// TODO: Extend for lists + ranges
 fn convert_test_to_bool<'ctx>(
     test: &AnyValueEnum<'ctx>,
     compiler: &mut Compiler<'ctx>,
