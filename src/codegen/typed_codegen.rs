@@ -14,14 +14,14 @@ use std::collections::HashMap;
 use crate::astutils::get_iter_type_name;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, any_type_to_basic_type, build_range_call, build_typed_for_loop_body,
-    create_object, get_list_element_enum, get_llvm_type, get_llvm_type_name, handle_attr_fn_call,
-    handle_global_assignment, handle_predefined_functions, handle_str_compare,
-    handle_subscript_assignment, is_iterable, store_value,
+    allocate_variable, any_type_to_basic_type, build_generic_comp_op, build_range_call,
+    build_typed_for_loop_body, create_object, get_list_element_enum, get_llvm_type,
+    get_llvm_type_name, handle_attr_fn_call, handle_global_assignment, handle_predefined_functions,
+    handle_str_compare, handle_subscript_assignment, is_iterable, store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
-use crate::type_inference::{ConcreteValue, NodeTypeDB, Type, TypeEnv};
+use crate::type_inference::{extract_func_types, ConcreteValue, NodeTypeDB, Type, TypeEnv};
 
 use super::error::{BackendError, IRGenResult};
 use super::generic_codegen::LLVMGenericCodegen;
@@ -86,36 +86,24 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             }
         }
 
+        compiler
+            .func_types
+            .borrow_mut()
+            .insert(func_name.to_string(), func_type.clone());
+
         {
             let _ = compiler.sym_table.enter_scope();
         }
 
         // get argument and return types
-        let mut arg_types: Vec<Type> = Vec::new();
-        let return_type: Type;
-        match func_type {
-            Type::FuncType(func) => {
-                let initial_input = *func.input.clone();
-                // Don't add argument if it has type None (to deal with empty args)
-                match initial_input {
-                    Type::ConcreteType(ConcreteValue::None) => {}
-                    _ => arg_types.push(*func.input.clone()),
-                }
-                let mut current_output = &*func.output;
-                while let Type::FuncType(funcval) = current_output {
-                    arg_types.push(*funcval.input.clone());
-                    current_output = &*funcval.output;
-                }
-                return_type = current_output.clone();
-            }
-            _ => {
-                return Err(BackendError {
-                    message: "Function {func_name} type is not a FuncType.",
-                })
-            }
-        }
+        let mut func_types = extract_func_types(&func_type);
+        let func_type_err_msg = format!(
+            "Type for function {} ({:?}) is invalid.",
+            func_name, func_type
+        );
+        let return_type = func_types.pop().expect(&func_type_err_msg);
 
-        let llvm_arg_types: Vec<BasicMetadataTypeEnum<'_>> = arg_types
+        let llvm_arg_types: Vec<BasicMetadataTypeEnum<'_>> = func_types
             .into_iter()
             .map(|arg_type| {
                 let list_ptr_type = compiler
@@ -167,6 +155,12 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             Type::List(..) => {
                 let list_type = compiler.module.get_struct_type("struct.List").unwrap();
                 list_type
+                    .ptr_type(AddressSpace::default())
+                    .fn_type(&llvm_arg_types, false)
+            }
+            Type::Range => {
+                let range_type = compiler.module.get_struct_type("struct.Range").unwrap();
+                range_type
                     .ptr_type(AddressSpace::default())
                     .fn_type(&llvm_arg_types, false)
             }
@@ -940,8 +934,19 @@ impl LLVMTypedCodegen for ExprCompare {
         let f64_type = compiler.context.f64_type();
         let bool_type = compiler.context.bool_type();
         let str_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+        let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
 
         for (op, comp) in op_and_comp {
+            // Check if left or comp is generic, if it is then delegate to generic comp
+            if (left.is_pointer_value() && left.into_pointer_value().get_type() == obj_ptr_type)
+                || (comp.is_pointer_value() && comp.into_pointer_value().get_type() == obj_ptr_type)
+            {
+                let g_cmpop_name = format!("{:?}", op);
+                let generic_comp = build_generic_comp_op(compiler, &g_cmpop_name, &left, &comp)?;
+                conditions.push(generic_comp.into_int_value());
+                continue;
+            }
+
             let (new_left, new_comp, type_mismatch) = match (left.get_type(), comp.get_type()) {
                 (lt, rt) if lt == rt => (left, comp, false),
                 (lt, AnyTypeEnum::FloatType(_)) if lt.is_int_type() => (
@@ -1220,6 +1225,10 @@ impl LLVMTypedCodegen for ExprCall {
 
         // validate function args
         let arg_count = function.count_params();
+
+        println!("func_name {}", func_name);
+        println!("arg_count {}", arg_count);
+        println!("self.args.len() {}", self.args.len());
         if !func_name.eq("print") && arg_count != self.args.len() as u32 {
             return Err(BackendError {
                 message: "Incorrect number of arguments provided.",
@@ -1238,12 +1247,42 @@ impl LLVMTypedCodegen for ExprCall {
         }
 
         // check types of args
-        let fn_arg_types = function.get_type().get_param_types();
-        for i in 0..arg_count {
-            let expected_type = fn_arg_types[i as usize].as_any_type_enum();
-            if expected_type != args[i as usize].get_type() {
-                return self.generic_codegen(compiler);
+        let fn_arg_types = match compiler.func_types.borrow().get(func_name) {
+            None => {
+                return Err(BackendError {
+                    message: "Function call not mapped to type...",
+                })
             }
+            Some(typ) => {
+                if let Type::FuncType(..) = typ {
+                    let mut fn_types = extract_func_types(typ);
+                    fn_types.pop();
+                    fn_types
+                } else {
+                    return Err(BackendError {
+                        message: "Function call mapped to incorrect type.",
+                    });
+                }
+            }
+        };
+        let call_arg_types: Vec<Type> = self
+            .args
+            .clone()
+            .into_iter()
+            .map(|arg| {
+                let arg_type = types
+                    .get(&arg.range())
+                    .expect("Call argument not mapped to type...");
+                if let Type::Scheme(scheme) = arg_type {
+                    *scheme.type_name.clone()
+                } else {
+                    arg_type.clone()
+                }
+            })
+            .collect();
+
+        if !call_arg_types.eq(&fn_arg_types) {
+            return self.generic_codegen(compiler);
         }
 
         let args: Vec<BasicMetadataValueEnum<'_>> = args

@@ -51,11 +51,11 @@ grid = [
 ]   # list[list[str]]
 
 grid2 = [
-  ["1","1","0","0","0"],
-  ["1","1","0","0","0"],
-  ["0","0","1","0","0"],
-  ["0","0","0","1","1"]
-]   # list[list[str]]
+  "11000",
+  "11000",
+  "00100",
+  "00011"
+]   # list[str]
 
 print("numIslands(grid) == 1 ?", numIslands(grid) == 1)
 print("numIslands(grid2) == 3 ?", numIslands(grid2) == 3)

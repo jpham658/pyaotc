@@ -14,9 +14,9 @@ use rustpython_parser::ast::{
 use crate::astutils::GetReturnStmts;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, any_type_to_basic_type, build_generic_for_loop_body, build_generic_len_call,
-    build_generic_range_call, create_object, get_list_element_enum, handle_global_assignment,
-    store_value,
+    allocate_variable, any_type_to_basic_type, build_generic_comp_op, build_generic_for_loop_body,
+    build_generic_len_call, build_generic_range_call, create_object, get_list_element_enum,
+    handle_global_assignment, store_value,
 };
 use crate::compiler_utils::to_any_type::ToAnyType;
 
@@ -739,37 +739,7 @@ impl LLVMGenericCodegen for ExprCompare {
         for (op, comp) in ops.iter().zip(comparators.iter()) {
             let g_cmpop_fn_name = format!("{:?}", op);
 
-            let g_cmpop_fn = match compiler.module.get_function(&g_cmpop_fn_name) {
-                Some(func) => func,
-                None => {
-                    let params = [obj_ptr_type, obj_ptr_type]
-                        .iter()
-                        .map(|p| {
-                            compiler
-                                .convert_any_type_to_param_type(p.as_any_type_enum())
-                                .unwrap()
-                        })
-                        .collect::<Vec<_>>();
-
-                    let g_op_fn_type = compiler.context.bool_type().fn_type(&params, false);
-                    compiler
-                        .module
-                        .add_function(&g_cmpop_fn_name, g_op_fn_type, None)
-                }
-            };
-
-            let llvm_comp = compiler
-                .builder
-                .build_call(
-                    g_cmpop_fn,
-                    &[
-                        BasicMetadataValueEnum::PointerValue(left.into_pointer_value()),
-                        BasicMetadataValueEnum::PointerValue(comp.into_pointer_value()),
-                    ],
-                    "cmp_result",
-                )
-                .expect(format!("Could not perform generic {:?}.", op).as_str())
-                .as_any_value_enum();
+            let llvm_comp = build_generic_comp_op(compiler, &g_cmpop_fn_name, &left, comp)?;
             conditions.push(llvm_comp.into_int_value());
 
             left = llvm_comp;

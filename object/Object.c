@@ -441,8 +441,8 @@ Object *object_index(Object *value, Object *slice)
         CHECK_PREDICATE(object_is_int(slice), "Cannot index with non-integer slice.");
         const char *val_as_str = object_as_str(value);
         word slice_as_int = object_as_int(slice);
-        const char *val_at_index = str_index(val_as_str, slice_as_int);
-        Object *res = new_str(val_at_index);
+        const char **val_at_index = str_index(val_as_str, slice_as_int);
+        Object *res = new_str(*val_at_index);
         return res;
     }
     }

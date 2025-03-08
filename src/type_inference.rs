@@ -325,6 +325,7 @@ impl TypeInferrer {
         let final_return_type = apply(&final_subs, &return_type);
 
         type_db.insert(call.range(), final_return_type.clone());
+        type_db.insert(func.range(), *scheme_type1.type_name.clone());
 
         Ok((final_subs, final_return_type))
     }
@@ -822,12 +823,11 @@ impl TypeInferrer {
                 // Add function name to env in case it is tail recursive
                 let fn_name = funcdef.name.as_str();
                 let mut new_env = env.clone();
+                let temp_fn_type = Type::TypeVar(TypeVar(self.fresh_var_generator.next()));
                 new_env.insert(
                     fn_name.to_string(),
                     Scheme {
-                        type_name: Box::new(Type::TypeVar(TypeVar(
-                            self.fresh_var_generator.next(),
-                        ))),
+                        type_name: Box::new(temp_fn_type.clone()),
                         bounded_vars: BTreeSet::new(),
                     },
                 );
@@ -836,7 +836,12 @@ impl TypeInferrer {
                     Ok((sub, typ)) => {
                         let generalised_functype = generalise(typ, env);
                         env.insert(funcdef.name.as_str().to_string(), generalised_functype);
-                        func_type
+                        let fn_type_unifier = match unify(&temp_fn_type, typ) {
+                            Ok(unifier) => unifier,
+                            Err(..) => Sub::new(),
+                        };
+                        let composed_sub = compose_subs(&sub, &fn_type_unifier);
+                        Ok((composed_sub, typ.clone()))
                     }
                     Err(_) => func_type,
                 }
@@ -974,19 +979,27 @@ impl TypeInferrer {
 //  ====================================================
 
 /**
- * Helper to resolve element type if the given type is
- * indexable, otherwise return an error.
+ * Helper to extract a function type as a vector e.g.
+ * Int -> Bool -> Str -> None becomes [Int, Bool, Str, None]
  */
-pub fn get_elt_type(typ: &Type) -> TypeInferenceRes {
-    match typ {
-        Type::ConcreteType(ConcreteValue::Str) => return Ok((Sub::new(), typ.clone())),
-        Type::List(elt_typ) => return Ok((Sub::new(), *elt_typ.clone())),
-        Type::Mapping(_, val_typ) => return Ok((Sub::new(), *val_typ.clone())),
-        _ => {
-            let msg = format!("Type {:?} is not subscriptable.", typ);
-            return Err(InferenceError { message: msg });
+pub fn extract_func_types(functype: &Type) -> Vec<Type> {
+    let mut types = Vec::new();
+    let mut current = functype;
+
+    while let Type::FuncType(func) = current {
+        types.push((*func.input).clone());
+        current = &func.output;
+    }
+
+    // Remove the first element if it's None (this means the function takes zero args)
+    if !types.is_empty() {
+        if let Type::ConcreteType(ConcreteValue::None) = types[0] {
+            types.remove(0);
         }
     }
+    types.push(current.clone());
+
+    types
 }
 
 /**

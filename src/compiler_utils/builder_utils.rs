@@ -1,6 +1,8 @@
 use inkwell::{
     types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, PointerType},
-    values::{AnyValue, AnyValueEnum, FunctionValue, IntValue, PointerValue},
+    values::{
+        AnyValue, AnyValueEnum, BasicMetadataValueEnum, FunctionValue, IntValue, PointerValue,
+    },
     AddressSpace,
 };
 use rustpython_ast::{CmpOp, ExprAttribute, ExprSubscript, Ranged, StmtAssign};
@@ -19,12 +21,65 @@ use crate::{
 use super::get_predicate::get_int_predicate;
 
 /**
+ * Helper to perform generic compare expression
+ */
+pub fn build_generic_comp_op<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    g_cmpop_name: &str,
+    left: &AnyValueEnum<'ctx>,
+    comp: &AnyValueEnum<'ctx>,
+) -> IRGenResult<'ctx> {
+    let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+    let g_cmpop_fn = match compiler.module.get_function(g_cmpop_name) {
+        Some(func) => func,
+        None => {
+            let params = [obj_ptr_type, obj_ptr_type]
+                .iter()
+                .map(|p| {
+                    compiler
+                        .convert_any_type_to_param_type(p.as_any_type_enum())
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+
+            let g_op_fn_type = compiler.context.bool_type().fn_type(&params, false);
+            compiler
+                .module
+                .add_function(&g_cmpop_name, g_op_fn_type, None)
+        }
+    };
+    let left = create_object(compiler, *left)?;
+    let comp = create_object(compiler, *comp)?;
+
+    let llvm_comp = compiler
+        .builder
+        .build_call(
+            g_cmpop_fn,
+            &[
+                BasicMetadataValueEnum::PointerValue(left.into_pointer_value()),
+                BasicMetadataValueEnum::PointerValue(comp.into_pointer_value()),
+            ],
+            "cmp_result",
+        )
+        .expect(format!("Could not perform generic {:?}.", g_cmpop_name).as_str())
+        .as_any_value_enum();
+
+    Ok(llvm_comp)
+}
+
+/**
  * Helper to initialise Object* from a typed value
  */
 pub fn create_object<'ctx>(
     compiler: &mut Compiler<'ctx>,
     value: AnyValueEnum<'ctx>,
 ) -> IRGenResult<'ctx> {
+    // Check if given value is already an object
+    let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
+    if value.is_pointer_value() && value.into_pointer_value().get_type() == obj_ptr_type {
+        return Ok(value);
+    }
+
     let list_ptr_type = compiler
         .module
         .get_struct_type("struct.List")
@@ -35,6 +90,7 @@ pub fn create_object<'ctx>(
         .get_struct_type("struct.Range")
         .unwrap()
         .ptr_type(AddressSpace::default());
+    let str_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
 
     let new_object_fn = match value.get_type() {
         AnyTypeEnum::IntType(v) if v == compiler.context.bool_type() => compiler
@@ -57,7 +113,7 @@ pub fn create_object<'ctx>(
             .module
             .get_function("new_range")
             .expect("new_range isn't defined"),
-        AnyTypeEnum::PointerType(ptr_type) => compiler
+        AnyTypeEnum::PointerType(ptr_type) if ptr_type == str_type => compiler
             .module
             .get_function("new_str")
             .expect("new_str isn't defined"),

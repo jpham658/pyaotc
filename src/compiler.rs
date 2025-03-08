@@ -13,7 +13,7 @@ use crate::codegen::error::{BackendError, IRGenResult};
 use crate::codegen::generic_codegen::LLVMGenericCodegen;
 use crate::codegen::scope::ScopeManager;
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
-use crate::type_inference::NodeTypeDB;
+use crate::type_inference::{NodeTypeDB, Type, TypeEnv};
 
 #[derive(Debug)]
 pub struct Compiler<'ctx> {
@@ -23,6 +23,7 @@ pub struct Compiler<'ctx> {
     pub sym_table: ScopeManager<'ctx>,
     pub generically_compile: bool,
     pub func_args: RefCell<Vec<String>>,
+    pub func_types: RefCell<HashMap<String, Type>>,
     pub any_type: StructType<'ctx>,
     pub object_type: StructType<'ctx>,
 }
@@ -45,6 +46,7 @@ impl<'ctx> Compiler<'ctx> {
             sym_table: ScopeManager::new(),
             generically_compile,
             func_args: RefCell::new(Vec::new()),
+            func_types: RefCell::new(HashMap::new()),
             any_type,
             object_type,
         }
