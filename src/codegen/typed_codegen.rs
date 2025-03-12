@@ -498,6 +498,8 @@ impl LLVMTypedCodegen for StmtWhile {
                 .expect("Could not build while test."),
         };
 
+        let _ = compiler.sym_table.enter_scope();
+
         // while_body
         let _ = compiler.builder.position_at_end(while_body);
         let mut ret_stmt_in_while_body = false;
@@ -562,6 +564,8 @@ impl LLVMTypedCodegen for StmtWhile {
 
         // while_end
         let _ = compiler.builder.position_at_end(while_end);
+
+        let _ = compiler.sym_table.exit_scope();
 
         Ok(while_branch.as_any_value_enum())
     }

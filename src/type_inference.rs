@@ -4,7 +4,7 @@ use std::{
     hash::Hash,
 };
 
-use rustpython_ast::{ExprList, ExprSet};
+use rustpython_ast::ExprList;
 use rustpython_parser::{
     ast::{
         located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, ExprSubscript, Ranged,
@@ -79,7 +79,6 @@ pub enum Type {
 /**
  * A database that maps nodes to types.
  * Used for rule typing to find types of r-values and slices.
- * TODO: Should I extend this for every node in the AST?
  */
 pub type NodeTypeDB = HashMap<TextRange, Type>;
 
