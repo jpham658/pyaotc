@@ -118,9 +118,18 @@ pub fn create_object<'ctx>(
             .get_function("new_str")
             .expect("new_str isn't defined"),
         _ => {
-            return Err(BackendError {
-                message: "Given value cannot be converted to Object*.",
-            })
+            if value.is_pointer_value() {
+                println!("here {:?}", value);
+                let ptr_val = compiler
+                    .builder
+                    .build_load(value.into_pointer_value(), "")
+                    .expect("Could not load from pointer");
+                return create_object(compiler, ptr_val.as_any_value_enum());
+            } else {
+                return Err(BackendError {
+                    message: "Given value cannot be converted to Object*.",
+                });
+            }
         }
     };
 
@@ -1047,10 +1056,6 @@ pub fn build_typed_for_loop_body<'ctx>(
     // TODO: Add generic version of target ptr by loading the value and boxing it with create_object()
     let target =
         build_iter_increment(compiler, iter_ptr, next_func, target_type)?.into_pointer_value();
-
-    compiler
-        .sym_table
-        .add_variable(target_name, Some(target.as_any_value_enum()), None);
     let is_null = compiler
         .builder
         .build_is_null(target, "is_null")
@@ -1061,6 +1066,15 @@ pub fn build_typed_for_loop_body<'ctx>(
 
     // loop_body
     compiler.builder.position_at_end(loop_body_block);
+    let target_obj = create_object(compiler, target.as_any_value_enum())?;
+    let target_obj_ptr = allocate_variable(compiler, target_name, &target_obj)?;
+    let _ = store_value(compiler, &target_obj_ptr.into_pointer_value(), &target_obj)?;
+
+    compiler.sym_table.add_variable(
+        target_name,
+        Some(target.as_any_value_enum()),
+        Some(target_obj_ptr),
+    );
     for stmt in body {
         stmt.typed_codegen(compiler, &type_db)?;
     }

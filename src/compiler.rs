@@ -205,7 +205,13 @@ impl<'ctx> Compiler<'ctx> {
         let obj_file_path = format!("{}/{}.o", temp_dir, file_name);
 
         let llc_status = Command::new("llc")
-            .args(["-filetype=obj", &linked_llvm_file, "-o", &obj_file_path, "-O1"])
+            .args([
+                "-filetype=obj",
+                &linked_llvm_file,
+                "-o",
+                &obj_file_path,
+                "-O1",
+            ])
             .status()
             .map_err(|e| format!("Failed to execute llc: {}", e))?;
 
@@ -406,6 +412,7 @@ impl<'ctx> Compiler<'ctx> {
         );
         let list_append_fn_type =
             list_type.fn_type(&[list_type.into(), void_ptr_type.into()], false);
+        let list_add_fn_type = list_type.fn_type(&[list_type.into(), list_type.into()], false);
 
         self.module
             .add_function("create_list", create_list_fn_type, None);
@@ -415,6 +422,7 @@ impl<'ctx> Compiler<'ctx> {
         self.module.add_function("list_set", list_set_fn_type, None);
         self.module
             .add_function("list_append", list_append_fn_type, None);
+        self.module.add_function("list_add", list_add_fn_type, None);
     }
 
     /**

@@ -18,7 +18,6 @@ use rustpython_parser::{
 };
 use std::{env, fs, path::Path};
 use type_inference::{free_type_vars_in_type_env, infer_stmts, NodeTypeDB, TypeEnv, TypeInferrer};
-use uuid::Uuid;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -56,8 +55,8 @@ fn main() {
             // print_ast(&ast);
             // normal type inference
             infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
+            println!("{:?}", type_env);
 
-            // TODO: Implement inference with timeout
             // TODO: Add call collector support to type inferrer
             // if we still have unbound types, use call collector to instantiate functions with
             // most common argument types

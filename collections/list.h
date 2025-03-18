@@ -2,6 +2,7 @@
 #define LIST_H
 
 #include "iterator.h"
+#include <stdbool.h>
 
 typedef enum
 {
@@ -31,6 +32,7 @@ extern size_t list_len(List *list);
 extern void *list_index(List *list, word index);
 extern void *list_set(List *list, word index, void *value);
 extern List *list_append(List *list, void *item);
+extern List *list_add(List *list1, List* list2);
 extern Iterator *list_iter(List *list);
 extern void *list_next(void *iter);
 extern void print_list(List *list);

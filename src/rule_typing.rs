@@ -141,6 +141,9 @@ pub fn infer_stmts_with_rules(
                 orelse,
                 ..
             }) => {
+                let _ = infer_stmts_with_rules(rule_env, body, rule_type_db, type_db);
+                let _ = infer_stmts_with_rules(rule_env, orelse, rule_type_db, type_db);
+
                 let iter_string = get_node_string(iter);
                 if iter_string.is_empty() {
                     infer_expr_with_rules(
@@ -161,9 +164,6 @@ pub fn infer_stmts_with_rules(
                     rule_env,
                     rule_type_db,
                 );
-
-                let _ = infer_stmts_with_rules(rule_env, body, rule_type_db, type_db);
-                let _ = infer_stmts_with_rules(rule_env, orelse, rule_type_db, type_db);
             }
             Stmt::Expr(StmtExpr { value, .. }) => {
                 infer_expr_with_rules(rule_env, value, rule_type_db, &mut rule_inferrer, type_db);
@@ -233,6 +233,10 @@ fn infer_expr_with_rules(
                     rule_type_db,
                 );
             }
+
+            for arg in &call.args {
+                infer_expr_with_rules(rule_env, &arg, rule_type_db, rule_inferrer, type_db);
+            }
         }
         Expr::Subscript(subscript) => {
             // make sure to infer type of value too!
@@ -294,6 +298,64 @@ fn infer_expr_with_rules(
             infer_expr_with_rules(rule_env, &comp.left, rule_type_db, rule_inferrer, type_db);
             for comparator in &comp.comparators {
                 infer_expr_with_rules(rule_env, &comparator, rule_type_db, rule_inferrer, type_db);
+            }
+        }
+        Expr::BinOp(binop) => {
+            infer_expr_with_rules(rule_env, &binop.left, rule_type_db, rule_inferrer, type_db);
+            infer_expr_with_rules(rule_env, &binop.right, rule_type_db, rule_inferrer, type_db);
+
+            let left_type = type_db
+                .get(&binop.left.range())
+                .cloned()
+                .unwrap_or_else(|| rule_inferrer.get_new_typevar());
+
+            let right_type = type_db
+                .get(&binop.right.range())
+                .cloned()
+                .unwrap_or_else(|| rule_inferrer.get_new_typevar());
+
+            println!("{:?}", left_type);
+            println!("{:?}", right_type);
+            println!("{:?}", rule_env);
+
+            if let Type::TypeVar(..) = left_type {
+                return;
+            }
+
+            if let Type::TypeVar(..) = right_type {
+                return;
+            }
+
+            if left_type != Type::ConcreteType(ConcreteValue::Str)
+                || right_type != Type::ConcreteType(ConcreteValue::Str)
+            {
+                if let Some(subscript) = binop.left.as_subscript_expr() {
+                    remove_types_from_subscript_heuristic(
+                        subscript,
+                        rule_env,
+                        &[Type::ConcreteType(ConcreteValue::Str)],
+                    );
+                } else {
+                    remove_type_from_heuristic(
+                        &binop.left,
+                        rule_env,
+                        &Type::ConcreteType(ConcreteValue::Str),
+                    );
+                }
+
+                if let Some(subscript) = binop.right.as_subscript_expr() {
+                    remove_types_from_subscript_heuristic(
+                        subscript,
+                        rule_env,
+                        &[Type::ConcreteType(ConcreteValue::Str)],
+                    );
+                } else {
+                    remove_type_from_heuristic(
+                        &binop.right,
+                        rule_env,
+                        &Type::ConcreteType(ConcreteValue::Str),
+                    );
+                }
             }
         }
         _ => {}
@@ -458,9 +520,12 @@ pub fn remove_type_from_heuristic(node: &Expr, rule_env: &mut RuleEnv, type_to_r
         return;
     }
 
-    let heuristic = rule_env.get_mut(&node_name).unwrap();
-    if heuristic.contains_key(&type_to_remove) {
-        heuristic.remove(&type_to_remove);
+    let heuristic = rule_env.get_mut(&node_name);
+
+    if let Some(h) = heuristic {
+        if h.contains_key(&type_to_remove) {
+            h.remove(&type_to_remove);
+        }
     }
 }
 

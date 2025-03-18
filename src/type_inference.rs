@@ -537,6 +537,14 @@ impl TypeInferrer {
                         Type::ConcreteType(ConcreteValue::Str),
                         Type::ConcreteType(ConcreteValue::Str),
                     ) => Type::ConcreteType(ConcreteValue::Str),
+                    (
+                        Type::List(elt_type1),
+                        Type::List(elt_type2),
+                    ) => {
+                        let unifier = unify(&elt_type1, &elt_type2)?;
+                        composite_subs = compose_subs(&composite_subs, &unifier);
+                        Type::List(elt_type1)
+                    }
                     _ => {
                         return Err(InferenceError {
                             message: "Expression type not implemented yet.".to_string(),
@@ -1300,6 +1308,8 @@ pub fn unify(t1: &Type, t2: &Type) -> Result<Sub, InferenceError> {
                     || val1.eq(&ConcreteValue::Str)
                     || val2.eq(&ConcreteValue::Str))
             {
+                println!("{:?}", val1);
+                println!("{:?}", val2);
                 return Err(InferenceError {
                     message: "Mismatching concrete types".to_string(),
                 });

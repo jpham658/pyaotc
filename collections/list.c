@@ -100,6 +100,31 @@ List *list_append(List *list, void *item)
     return list;
 }
 
+List *list_add(List *list1, List *list2)
+{
+    if (list1->elt_type != list2->elt_type)
+    {
+        fprintf(stderr, "Lists have mismatching element types.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    List *resulant_list = create_list(list1->item_size, list1->elt_type);
+
+    for (size_t i = 0; i < list1->length; i++)
+    {
+        void *item = list_index(list1, i);
+        list_append(resulant_list, item);
+    }
+
+    for (size_t i = 0; i < list2->length; i++)
+    {
+        void *item = list_index(list2, i);
+        list_append(resulant_list, item);
+    }
+
+    return resulant_list;
+}
+
 void *list_next(void *iter)
 {
     Iterator *it = (Iterator *)iter;

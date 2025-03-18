@@ -260,7 +260,10 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 Type::ConcreteType(ConcreteValue::None) => {
                     continue;
                 }
-                Type::ConcreteType(ConcreteValue::Str) => {
+                Type::ConcreteType(ConcreteValue::Str)
+                | Type::List(..)
+                | Type::Range
+                | Type::Any => {
                     let _ = compiler
                         .builder
                         .build_return(Some(&ir.into_pointer_value()));
@@ -1400,8 +1403,6 @@ impl LLVMTypedCodegen for ExprBinOp {
         compiler: &mut Compiler<'ctx>,
         types: &NodeTypeDB,
     ) -> IRGenResult<'ir> {
-        // TODO: Figure out what to do if I have like a result from a generic func and
-        // I try to do some operations on it
         let op = self.op;
         let left = self.left.typed_codegen(compiler, types)?;
         let right = self.right.typed_codegen(compiler, types)?;
@@ -1434,20 +1435,57 @@ impl LLVMTypedCodegen for ExprBinOp {
                         .expect("Could not perform int addition")
                         .as_any_value_enum()
                 } else if left.is_pointer_value() && right.is_pointer_value() {
-                    // String concat
-                    let strconcat_fn = compiler.module.get_function("strconcat").unwrap();
-                    let res = compiler
-                        .builder
-                        .build_call(
-                            strconcat_fn,
-                            &[
-                                left.into_pointer_value().into(),
-                                right.into_pointer_value().into(),
-                            ],
-                            "",
-                        )
-                        .expect("Could not create string from object.");
-                    res.as_any_value_enum()
+                    let list_type = compiler
+                        .module
+                        .get_struct_type("struct.List")
+                        .unwrap()
+                        .ptr_type(AddressSpace::default());
+                    let void_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+                    let left_ptr_type = left.into_pointer_value().get_type();
+                    let right_ptr_type = right.into_pointer_value().get_type();
+
+                    let res = if left_ptr_type == list_type && right_ptr_type == list_type {
+                        let list_add_fn = compiler.module.get_function("list_add").unwrap();
+                        let res = compiler
+                            .builder
+                            .build_call(
+                                list_add_fn,
+                                &[
+                                    left.into_pointer_value().into(),
+                                    right.into_pointer_value().into(),
+                                ],
+                                "",
+                            )
+                            .expect("Could not create .")
+                            .as_any_value_enum();
+                        Some(res)
+                    } else if left_ptr_type == void_type && right_ptr_type == void_type {
+                        let strconcat_fn = compiler.module.get_function("strconcat").unwrap();
+                        let res = compiler
+                            .builder
+                            .build_call(
+                                strconcat_fn,
+                                &[
+                                    left.into_pointer_value().into(),
+                                    right.into_pointer_value().into(),
+                                ],
+                                "",
+                            )
+                            .expect("Pointers are not strings.")
+                            .as_any_value_enum();
+                        Some(res)
+                    } else {
+                        None
+                    };
+
+                    match res {
+                        Some(res) => res,
+                        _ => {
+                            return Err(BackendError {
+                                message: "Invalid operand types for addition.",
+                            });
+                        }
+                    }
                 } else {
                     let float_map = get_left_and_right_as_floats(compiler, left, right);
                     let lhs = float_map

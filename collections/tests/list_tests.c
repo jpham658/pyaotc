@@ -82,7 +82,6 @@ void test_list_resize()
     assert(list->length == 10);
     assert(list->capacity >= 10);
 
-    // Verify the appended values
     for (int i = 0; i < 10; i++)
     {
         int *value = (int *)list_index(list, i);
@@ -109,7 +108,6 @@ void test_list_iter()
     }
     assert(it->next(it) == NULL);
 
-    
     List *string_list = create_list(sizeof(const char *), LIST_STRING);
     const char *strings[] = {"hello", "world", "python"};
     for (int i = 0; i < 3; i++)
@@ -123,6 +121,39 @@ void test_list_iter()
     {
         printf("Iterate: \"%s\"\n", *curr);
         curr = (const char **)string_list_iter->next(string_list_iter);
+    }
+}
+
+void test_list_add()
+{
+    List *double_list1 = create_list(sizeof(double), LIST_FLOAT);
+    double values[] = {1.23, 4.56, 7.89};
+    for (int i = 0; i < 3; i++)
+    {
+        list_append(double_list1, &values[i]);
+    }
+
+    List *double_list2 = create_list(sizeof(double), LIST_FLOAT);
+    for (int i = 3; i > 0; i--)
+    {
+        list_append(double_list2, &values[i]);
+    }
+
+    List *expected_list = create_list(sizeof(double), LIST_FLOAT);
+    for (int i = 3; i > 0; i--)
+    {
+        list_append(double_list2, &values[i]);
+    }
+    for (int i = 3; i > 0; i--)
+    {
+        list_append(double_list2, &values[i]);
+    }
+
+    List *actual_list = list_add(double_list1, double_list2);
+
+    for (size_t i = 0; i < expected_list; i++)
+    {
+        assert(*(double *)list_index(expected_list, i) == *(double *)list_index(actual_list, i));
     }
 }
 
