@@ -205,7 +205,7 @@ impl<'ctx> Compiler<'ctx> {
         let obj_file_path = format!("{}/{}.o", temp_dir, file_name);
 
         let llc_status = Command::new("llc")
-            .args(["-filetype=obj", &linked_llvm_file, "-o", &obj_file_path])
+            .args(["-filetype=obj", &linked_llvm_file, "-o", &obj_file_path, "-O1"])
             .status()
             .map_err(|e| format!("Failed to execute llc: {}", e))?;
 
@@ -213,13 +213,13 @@ impl<'ctx> Compiler<'ctx> {
             return Err("llc failed to compile LLVM IR to object file".to_string());
         }
 
-        let gcc_status = Command::new("gcc")
+        let clang_status = Command::new("clang")
             .args([&obj_file_path, "-lm", "-lgc", "-no-pie", "-o", &file_name])
             .status()
-            .map_err(|e| format!("Failed to execute gcc: {}", e))?;
+            .map_err(|e| format!("Failed to generate binary from object file: {}", e))?;
 
-        if !gcc_status.success() {
-            return Err("gcc failed to link object file into final binary".to_string());
+        if !clang_status.success() {
+            return Err("clang failed to link object file into final binary".to_string());
         }
 
         println!(
