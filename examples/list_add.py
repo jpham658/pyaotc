@@ -5,13 +5,15 @@
 #     status: success
 #     stdout:
 #         ...
-#         x: [1, 2, 3]
-#         y: [4, 5, 6]
-#         x + y: [1, 2, 3, 4, 5, 6]
+#         [0, 2, 4, 6]
+#         [0, 2, 4, 6]
 #         ...
 
-x = [1,2,3]
-y = [4,5,6]
-print("x:", x)
-print("y:", y)
-print("x + y:", x + y)
+def f(x):
+    l = []
+    for i in range(len(x)):
+      l.append(x[i] + i)
+    return l
+
+print(f(range(0,4)))
+print(f([0,1,2,3]))

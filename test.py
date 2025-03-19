@@ -1,9 +1,10 @@
-def f(x):
-    # l = []
-    for i in range(len(x)):
-      print(x[i], ",", i)
-      print(x[i] + i)
-    #   l.append(x[i] + i)
-    # return l
+def fib(n):
+    a = 0
+    b = 1
+    while a < n:
+        print(a)
+        temp = a
+        a = b 
+        b = temp+b
 
-f(range(0,4))
+fib(1000)

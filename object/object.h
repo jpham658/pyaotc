@@ -93,7 +93,6 @@ extern void print_str(const char *str);
 extern void print_float(double d);
 extern void print_newline();
 extern void print_none();
-
 extern void print_obj(int arg_num, Object *obj, ...);
 extern void print_heap_obj(HeapObject *heap_obj);
 

@@ -50,10 +50,14 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                     let arg_num = compiler.context.i32_type().const_int(1, false);
                     let _ = compiler
                         .builder
-                        .build_call(print_obj, &[
-                            BasicMetadataValueEnum::IntValue(arg_num),
-                            BasicMetadataValueEnum::PointerValue(*ptr)
-                        ], "")
+                        .build_call(
+                            print_obj,
+                            &[
+                                BasicMetadataValueEnum::IntValue(arg_num),
+                                BasicMetadataValueEnum::PointerValue(*ptr),
+                            ],
+                            "",
+                        )
                         .expect("Could not call print_obj.");
                 } else if ptr.get_type() == range_type.ptr_type(AddressSpace::default()) {
                     let print_range = compiler
@@ -62,9 +66,11 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                         .expect("print_range is not defined.");
                     let _ = compiler
                         .builder
-                        .build_call(print_range, &[
-                            BasicMetadataValueEnum::PointerValue(*ptr)
-                        ], "")
+                        .build_call(
+                            print_range,
+                            &[BasicMetadataValueEnum::PointerValue(*ptr)],
+                            "",
+                        )
                         .expect("Could not call print_range.");
                 } else if ptr.get_type() == list_type.ptr_type(AddressSpace::default()) {
                     let print_list = compiler
@@ -73,9 +79,11 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                         .expect("print_list is not defined.");
                     let _ = compiler
                         .builder
-                        .build_call(print_list, &[
-                            BasicMetadataValueEnum::PointerValue(*ptr)
-                        ], "")
+                        .build_call(
+                            print_list,
+                            &[BasicMetadataValueEnum::PointerValue(*ptr)],
+                            "",
+                        )
                         .expect("Could not call print_list.");
                 } else {
                     let print_str = compiler
@@ -95,6 +103,8 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
                 });
             }
         }
+
+        print_space(compiler)?;
     }
 
     let print_newline = compiler
@@ -107,4 +117,30 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
         .expect("Could not call print_newline.");
 
     Ok(compiler.context.i32_type().const_zero().as_any_value_enum())
+}
+
+fn print_space<'a>(compiler: &Compiler<'a>) -> IRGenResult<'a> {
+    let space_str = compiler
+        .builder
+        .build_global_string_ptr(" ", "space")
+        .expect("Could not define space constant.")
+        .as_pointer_value();
+
+    let print_str = compiler
+        .module
+        .get_function("print_str")
+        .expect("print_str is not defined.");
+
+    let call = compiler.builder.build_call(
+        print_str,
+        &[BasicMetadataValueEnum::PointerValue(space_str)],
+        "",
+    );
+
+    match call {
+        Ok(res) => Ok(res.as_any_value_enum()),
+        Err(..) => Err(BackendError {
+            message: "Could not print space.",
+        }),
+    }
 }

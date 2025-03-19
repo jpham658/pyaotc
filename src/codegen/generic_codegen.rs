@@ -15,8 +15,8 @@ use crate::astutils::GetReturnStmts;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
     allocate_variable, any_type_to_basic_type, build_generic_comp_op, build_generic_for_loop_body,
-    build_generic_len_call, build_generic_range_call, create_object, get_list_element_enum,
-    handle_global_assignment, store_value,
+    build_generic_len_call, build_generic_range_call, build_print_obj_call, create_object,
+    get_list_element_enum, handle_global_assignment, store_value,
 };
 use crate::compiler_utils::to_any_type::ToAnyType;
 
@@ -846,27 +846,26 @@ impl LLVMGenericCodegen for ExprBoolOp {
 
 impl LLVMGenericCodegen for ExprCall {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
+        let args: Vec<_> = self
+            .args
+            .iter()
+            .map(|arg| {
+                let arg_codegen = arg.generic_codegen(compiler).unwrap();
+                if arg_codegen.is_int_value() {
+                    create_object(compiler, arg_codegen).expect("Could not create object.")
+                } else {
+                    arg_codegen
+                }
+            })
+            .collect();
+
+        println!("{:?}", args);
         if let Some(attr) = self.func.as_attribute_expr() {
-            // validate args
-            // codegen args
-            // call object_append
             if self.args.len() != 1 {
                 return Err(BackendError {
                     message: "Incorrect number of arguments given to append call.",
                 });
             }
-            let args: Vec<_> = self
-                .args
-                .iter()
-                .map(|arg| {
-                    let arg_codegen = arg.generic_codegen(compiler).unwrap();
-                    if arg_codegen.is_int_value() {
-                        create_object(compiler, arg_codegen).expect("Could not create object.")
-                    } else {
-                        arg_codegen
-                    }
-                })
-                .collect();
             let value_obj = attr.value.generic_codegen(compiler)?;
             let appended_val = args[0];
             let object_append_fn = compiler
@@ -896,20 +895,10 @@ impl LLVMGenericCodegen for ExprCall {
             .as_str();
         let function;
         if func_name.eq("print") {
-            function = compiler.module.get_function("print_obj").unwrap();
+            return build_print_obj_call(compiler, &args);
         } else if func_name.eq("range") {
-            let args = self
-                .args
-                .iter()
-                .map(|arg| arg.generic_codegen(compiler))
-                .collect::<Result<Vec<_>, BackendError>>()?;
-            return build_generic_range_call(compiler, args);
+            return build_generic_range_call(compiler, &args);
         } else if func_name.eq("len") {
-            let args = self
-                .args
-                .iter()
-                .map(|arg| arg.generic_codegen(compiler))
-                .collect::<Result<Vec<_>, BackendError>>()?;
             return build_generic_len_call(compiler, &args);
         } else {
             let generic_fn_name = format!("{}_g", func_name);
@@ -921,65 +910,26 @@ impl LLVMGenericCodegen for ExprCall {
 
         // validate function args
         let arg_count = function.count_params();
-        if !func_name.eq("print") && arg_count != self.args.len() as u32 {
+        if arg_count != self.args.len() as u32 {
             return Err(BackendError {
                 message: "Incorrect number of arguments provided.",
             });
         }
 
-        // generic_codegen args if we have any
-        let args: Vec<_> = self
-            .args
-            .iter()
-            .map(|arg| {
-                let arg_codegen = arg.generic_codegen(compiler).unwrap();
-                if arg_codegen.is_int_value() {
-                    create_object(compiler, arg_codegen).expect("Could not create object.")
-                } else {
-                    arg_codegen
-                }
-            })
-            .collect();
-
-        let mut args: Vec<BasicMetadataValueEnum<'_>> = args
+        let args: Vec<BasicMetadataValueEnum<'_>> = args
             .into_iter()
             .filter_map(|val| match val {
                 AnyValueEnum::PointerValue(..) => Some(BasicMetadataValueEnum::PointerValue(
                     val.into_pointer_value(),
                 )),
-                AnyValueEnum::IntValue(i) => {
-                    // Shouldn't fail bc it was in our setup IR!
-                    let new_bool = compiler.module.get_function("new_bool").unwrap();
-                    let bool_obj = compiler
-                        .builder
-                        .build_call(new_bool, &[i.into()], "")
-                        .expect("Could not call new_bool.")
-                        .as_any_value_enum();
-                    Some(BasicMetadataValueEnum::PointerValue(
-                        bool_obj.into_pointer_value(),
-                    ))
-                }
                 _ => None,
             })
             .collect();
-
-        if func_name.eq("print") {
-            let llvm_arg_count = compiler
-                .context
-                .i32_type()
-                .const_int(args.len() as u64, false);
-            args.insert(0, BasicMetadataValueEnum::IntValue(llvm_arg_count));
-        }
 
         let call = compiler
             .builder
             .build_call(function, &args, "tmpcall")
             .expect("Could not call function.");
-
-        if func_name.eq("print") {
-            let print_newline_fn = compiler.module.get_function("print_newline").unwrap();
-            let _ = compiler.builder.build_call(print_newline_fn, &[], "");
-        }
 
         Ok(call.as_any_value_enum())
     }

@@ -21,6 +21,40 @@ use crate::{
 use super::get_predicate::get_int_predicate;
 
 /**
+ * Helper to build print_obj call
+ */
+pub fn build_print_obj_call<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    args: &[AnyValueEnum<'ctx>],
+) -> IRGenResult<'ctx> {
+    let print_obj_fn = compiler.module.get_function("print_obj").unwrap();
+    let llvm_arg_count = compiler
+        .context
+        .i32_type()
+        .const_int(args.len() as u64, false)
+        .as_any_value_enum();
+    let mut args = Vec::from(args);
+    args.insert(0, llvm_arg_count);
+
+    let args: Vec<BasicMetadataValueEnum<'_>> = args
+        .into_iter()
+        .filter_map(|val| compiler.convert_any_value_to_param_value(val))
+        .collect();
+
+    let print_obj_call = compiler.builder.build_call(print_obj_fn, &args, "");
+
+    let print_newline_fn = compiler.module.get_function("print_newline").unwrap();
+    let _ = compiler.builder.build_call(print_newline_fn, &[], "");
+
+    match print_obj_call {
+        Ok(res) => Ok(res.as_any_value_enum()),
+        Err(..) => Err(BackendError {
+            message: "Could not call print_obj.",
+        }),
+    }
+}
+
+/**
  * Helper to perform generic compare expression
  */
 pub fn build_generic_comp_op<'ctx>(
@@ -679,7 +713,7 @@ pub fn build_len_call<'ctx>(
  */
 pub fn build_generic_range_call<'ctx>(
     compiler: &mut Compiler<'ctx>,
-    args: Vec<AnyValueEnum<'ctx>>,
+    args: &[AnyValueEnum<'ctx>],
 ) -> IRGenResult<'ctx> {
     if args.len() == 0 {
         return Err(BackendError {

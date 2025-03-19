@@ -221,23 +221,23 @@ Object *build_range_obj(Object *start, Object *stop, Object *step)
 
 void print_int(int i)
 {
-    printf("%d ", i);
+    printf("%d", i);
 }
 
 void print_bool(bool b)
 {
-    const char *format_str = b ? "True " : "False ";
+    const char *format_str = b ? "True" : "False";
     printf(format_str);
 }
 
 void print_str(const char *str)
 {
-    printf("%s ", str);
+    printf("%s", str);
 }
 
 void print_float(double d)
 {
-    printf("%f ", d);
+    printf("%f", d);
 }
 
 void print_newline()
@@ -247,7 +247,7 @@ void print_newline()
 
 void print_none()
 {
-    printf("None ");
+    printf("None");
 }
 
 void print_obj(int arg_num, Object *obj, ...)
@@ -262,7 +262,7 @@ void print_obj(int arg_num, Object *obj, ...)
         if (curr == NULL)
         {
             print_none();
-            continue;
+            return;
         }
 
         switch (object_type(curr))
@@ -288,6 +288,11 @@ void print_obj(int arg_num, Object *obj, ...)
         default:
             printf("invalid object\n");
         };
+
+        if (i != arg_num - 1)
+        {
+            printf(" ");
+        }
 
         curr = va_arg(args, Object *);
     }
