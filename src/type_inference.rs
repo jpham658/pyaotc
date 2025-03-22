@@ -16,7 +16,7 @@ use rustpython_parser::{
 use crate::{
     astutils::serialise_subscript,
     rule_typing::{
-        get_inferred_rule_types, infer_stmts_with_rules, rule_unify_types, RuleEnv, RuleTypeDB,
+        get_inferred_rule_types, infer_stmts_with_rules, rule_unify_types, RuleEnv,
     },
 };
 
@@ -339,7 +339,6 @@ impl TypeInferrer {
         type_db: &mut NodeTypeDB,
     ) -> TypeInferenceRes {
         let mut rule_env = RuleEnv::new();
-        let mut rule_type_db = RuleTypeDB::new();
 
         let args = &func.args.args;
         let arg_types = args
@@ -376,7 +375,7 @@ impl TypeInferrer {
 
         // infer with rules too
         if let Err(e) =
-            infer_stmts_with_rules(&mut rule_env, &func.body, &mut rule_type_db, type_db)
+            infer_stmts_with_rules(&mut rule_env, &func.body, type_db)
         {
             eprintln!("RuleInferrenceError: {}", e.message);
             return Err(InferenceError { message: e.message });

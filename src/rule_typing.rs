@@ -19,8 +19,6 @@ pub type Heuristic = HashMap<Type, f32>;
 
 pub type RuleEnv = HashMap<String, Heuristic>;
 
-pub type RuleTypeDB = HashMap<TextRange, Heuristic>;
-
 pub struct RuleInferrenceError {
     pub message: String,
 }
@@ -40,7 +38,6 @@ type Rule = Vec<(Type, f32)>;
 pub fn infer_stmts_with_rules(
     rule_env: &mut RuleEnv,
     body: &[Stmt],
-    rule_type_db: &mut RuleTypeDB,
     type_db: &mut NodeTypeDB,
 ) -> RuleInferrenceRes {
     let mut rule_inferrer = RuleInferrer::new();
@@ -48,7 +45,7 @@ pub fn infer_stmts_with_rules(
         match stmt {
             Stmt::FunctionDef(funcdef) => {
                 if let Err(e) =
-                    infer_stmts_with_rules(rule_env, &funcdef.body, rule_type_db, type_db)
+                    infer_stmts_with_rules(rule_env, &funcdef.body, type_db)
                 {
                     return Err(e);
                 }
@@ -67,8 +64,6 @@ pub fn infer_stmts_with_rules(
                 }
 
                 let subscript = targets[0].as_subscript_expr().unwrap();
-
-                let subscript_string = serialise_subscript(&subscript);
                 let value_string = if let Some(val_subscript) = subscript.value.as_subscript_expr()
                 {
                     serialise_subscript(val_subscript)
@@ -91,7 +86,6 @@ pub fn infer_stmts_with_rules(
                 infer_expr_with_rules(
                     rule_env,
                     &targets[0],
-                    rule_type_db,
                     &mut rule_inferrer,
                     type_db,
                 );
@@ -103,14 +97,12 @@ pub fn infer_stmts_with_rules(
                             &slice_type,
                             &subscript_type,
                             rule_env,
-                            rule_type_db,
                         ),
                     _ => rule_inferrer.apply_key_rule(
                         &value_string,
                         &slice_type,
                         &subscript_type,
                         rule_env,
-                        rule_type_db,
                     ),
                 }
 
@@ -130,9 +122,9 @@ pub fn infer_stmts_with_rules(
             | Stmt::While(StmtWhile {
                 test, body, orelse, ..
             }) => {
-                infer_expr_with_rules(rule_env, test, rule_type_db, &mut rule_inferrer, type_db);
-                let _ = infer_stmts_with_rules(rule_env, body, rule_type_db, type_db);
-                let _ = infer_stmts_with_rules(rule_env, orelse, rule_type_db, type_db);
+                infer_expr_with_rules(rule_env, test, &mut rule_inferrer, type_db);
+                let _ = infer_stmts_with_rules(rule_env, body, type_db);
+                let _ = infer_stmts_with_rules(rule_env, orelse, type_db);
             }
             Stmt::For(StmtFor {
                 target,
@@ -141,15 +133,14 @@ pub fn infer_stmts_with_rules(
                 orelse,
                 ..
             }) => {
-                let _ = infer_stmts_with_rules(rule_env, body, rule_type_db, type_db);
-                let _ = infer_stmts_with_rules(rule_env, orelse, rule_type_db, type_db);
+                let _ = infer_stmts_with_rules(rule_env, body, type_db);
+                let _ = infer_stmts_with_rules(rule_env, orelse, type_db);
 
                 let iter_string = get_node_string(iter);
                 if iter_string.is_empty() {
                     infer_expr_with_rules(
                         rule_env,
                         &iter,
-                        rule_type_db,
                         &mut rule_inferrer,
                         type_db,
                     );
@@ -162,11 +153,10 @@ pub fn infer_stmts_with_rules(
                     &key_type,
                     &val_type,
                     rule_env,
-                    rule_type_db,
                 );
             }
             Stmt::Expr(StmtExpr { value, .. }) => {
-                infer_expr_with_rules(rule_env, value, rule_type_db, &mut rule_inferrer, type_db);
+                infer_expr_with_rules(rule_env, value, &mut rule_inferrer, type_db);
             }
             _ => {}
         }
@@ -177,7 +167,6 @@ pub fn infer_stmts_with_rules(
 fn infer_expr_with_rules(
     rule_env: &mut RuleEnv,
     expr: &Expr,
-    rule_type_db: &mut RuleTypeDB,
     rule_inferrer: &mut RuleInferrer,
     type_db: &mut NodeTypeDB,
 ) {
@@ -194,7 +183,7 @@ fn infer_expr_with_rules(
                 if !func_name.eq("len") || call.args.len() == 0 {
                     // continue looking inside function calls
                     for arg in &call.args {
-                        infer_expr_with_rules(rule_env, arg, rule_type_db, rule_inferrer, type_db);
+                        infer_expr_with_rules(rule_env, arg, rule_inferrer, type_db);
                     }
                     return;
                 }
@@ -205,7 +194,7 @@ fn infer_expr_with_rules(
                     if arg_name.is_empty() {
                         return;
                     }
-                    rule_inferrer.apply_len_rule(&arg_name, &typevar, rule_env, rule_type_db);
+                    rule_inferrer.apply_len_rule(&arg_name, &typevar, rule_env);
                 }
                 return;
             }
@@ -230,12 +219,11 @@ fn infer_expr_with_rules(
                     &value_string,
                     &typevar,
                     rule_env,
-                    rule_type_db,
                 );
             }
 
             for arg in &call.args {
-                infer_expr_with_rules(rule_env, &arg, rule_type_db, rule_inferrer, type_db);
+                infer_expr_with_rules(rule_env, &arg, rule_inferrer, type_db);
             }
         }
         Expr::Subscript(subscript) => {
@@ -243,7 +231,6 @@ fn infer_expr_with_rules(
             infer_expr_with_rules(
                 rule_env,
                 &subscript.value,
-                rule_type_db,
                 rule_inferrer,
                 type_db,
             );
@@ -269,7 +256,6 @@ fn infer_expr_with_rules(
                     &value_string,
                     &subscript_type,
                     rule_env,
-                    rule_type_db,
                 );
             } else {
                 rule_inferrer.apply_key_rule(
@@ -277,7 +263,6 @@ fn infer_expr_with_rules(
                     &slice_type,
                     &subscript_type,
                     rule_env,
-                    rule_type_db,
                 );
             }
 
@@ -289,20 +274,20 @@ fn infer_expr_with_rules(
         }
         Expr::BoolOp(boolop) => {
             for val in &boolop.values {
-                infer_expr_with_rules(rule_env, val, rule_type_db, rule_inferrer, type_db);
+                infer_expr_with_rules(rule_env, val, rule_inferrer, type_db);
             }
         }
         Expr::Compare(comp) => {
             // TODO: Implement `i in x` rule => x should be iterable with elt type i
             // if operator == In(), apply in rule
-            infer_expr_with_rules(rule_env, &comp.left, rule_type_db, rule_inferrer, type_db);
+            infer_expr_with_rules(rule_env, &comp.left, rule_inferrer, type_db);
             for comparator in &comp.comparators {
-                infer_expr_with_rules(rule_env, &comparator, rule_type_db, rule_inferrer, type_db);
+                infer_expr_with_rules(rule_env, &comparator, rule_inferrer, type_db);
             }
         }
         Expr::BinOp(binop) => {
-            infer_expr_with_rules(rule_env, &binop.left, rule_type_db, rule_inferrer, type_db);
-            infer_expr_with_rules(rule_env, &binop.right, rule_type_db, rule_inferrer, type_db);
+            infer_expr_with_rules(rule_env, &binop.left, rule_inferrer, type_db);
+            infer_expr_with_rules(rule_env, &binop.right, rule_inferrer, type_db);
 
             let left_type = type_db
                 .get(&binop.left.range())
@@ -551,14 +536,13 @@ impl RuleInferrer {
         key_type: &Type,
         val_type: &Type,
         rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
     ) {
         let rule = Vec::from([
             (Type::List(Box::new(val_type.clone())), 2.0),
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::Range, 2.0),
         ]);
-        self.apply_rule(node, &rule, rule_env, rule_type_db);
+        self.apply_rule(node, &rule, rule_env);
     }
 
     /**
@@ -571,10 +555,9 @@ impl RuleInferrer {
         node: &str,
         typ: &Type,
         rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
     ) {
         let rule = Vec::from([(Type::List(Box::new(typ.clone())), 10.0)]);
-        self.apply_rule(node, &rule, rule_env, rule_type_db);
+        self.apply_rule(node, &rule, rule_env);
     }
 
     /**
@@ -587,14 +570,13 @@ impl RuleInferrer {
         node: &str,
         typ: &Type,
         rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
     ) {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(typ.clone())), 2.0),
             (Type::Range, 2.0),
         ]);
-        self.apply_rule(node, &rule, rule_env, rule_type_db);
+        self.apply_rule(node, &rule, rule_env);
     }
 
     /**
@@ -608,14 +590,13 @@ impl RuleInferrer {
         node: &str,
         typ: &Type,
         rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
     ) {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(typ.clone())), 2.0),
             (Type::Range, 2.0),
         ]);
-        self.apply_rule(node, &rule, rule_env, rule_type_db);
+        self.apply_rule(node, &rule, rule_env);
     }
 
     /**
@@ -627,13 +608,12 @@ impl RuleInferrer {
         key_typ: &Type,
         val_typ: &Type,
         rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
     ) {
         let rule = Vec::from([(
             Type::Mapping(Box::new(key_typ.clone()), Box::new(val_typ.clone())),
             4.0,
         )]);
-        self.apply_rule(node, &rule, rule_env, rule_type_db);
+        self.apply_rule(node, &rule, rule_env);
     }
 
     /**
@@ -647,7 +627,6 @@ impl RuleInferrer {
         key_type: &Type,
         val_type: &Type,
         rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
     ) {
         let rule = Vec::from([
             (Type::List(Box::new(val_type.clone())), 3.0),
@@ -656,7 +635,7 @@ impl RuleInferrer {
                 2.0,
             ),
         ]);
-        self.apply_rule(node, &rule, rule_env, rule_type_db);
+        self.apply_rule(node, &rule, rule_env);
     }
 
     pub fn apply_rule(
@@ -664,7 +643,6 @@ impl RuleInferrer {
         node: &str,
         rule: &Rule,
         rule_env: &mut RuleEnv,
-        rule_type_db: &mut RuleTypeDB,
     ) {
         self.apply_rule_to_rule_env(node, rule, rule_env);
     }
