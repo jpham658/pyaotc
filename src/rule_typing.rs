@@ -3,9 +3,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use rustpython_ast::ExprSubscript;
-use rustpython_parser::{
-    ast::{Expr, Ranged, Stmt, StmtAssign, StmtExpr, StmtFor, StmtIf, StmtWhile},
-    text_size::TextRange,
+use rustpython_parser::ast::{
+    Expr, Ranged, Stmt, StmtAssign, StmtExpr, StmtFor, StmtIf, StmtWhile,
 };
 
 use crate::{
@@ -16,16 +15,13 @@ use crate::{
 };
 
 pub type Heuristic = HashMap<Type, f32>;
-
 pub type RuleEnv = HashMap<String, Heuristic>;
-
+type Rule = Vec<(Type, f32)>;
 pub struct RuleInferrenceError {
     pub message: String,
 }
 
 pub type RuleInferrenceRes = Result<(), RuleInferrenceError>;
-
-type Rule = Vec<(Type, f32)>;
 
 /**
  * The gist is, we pass down the name of the variable being inferred,
@@ -44,9 +40,7 @@ pub fn infer_stmts_with_rules(
     for stmt in body {
         match stmt {
             Stmt::FunctionDef(funcdef) => {
-                if let Err(e) =
-                    infer_stmts_with_rules(rule_env, &funcdef.body, type_db)
-                {
+                if let Err(e) = infer_stmts_with_rules(rule_env, &funcdef.body, type_db) {
                     return Err(e);
                 }
             }
@@ -83,12 +77,7 @@ pub fn infer_stmts_with_rules(
                     .cloned()
                     .unwrap_or_else(|| rule_inferrer.get_new_typevar());
 
-                infer_expr_with_rules(
-                    rule_env,
-                    &targets[0],
-                    &mut rule_inferrer,
-                    type_db,
-                );
+                infer_expr_with_rules(rule_env, &targets[0], &mut rule_inferrer, type_db);
 
                 match slice_type {
                     Type::ConcreteType(ConcreteValue::Int) => rule_inferrer
@@ -138,22 +127,12 @@ pub fn infer_stmts_with_rules(
 
                 let iter_string = get_node_string(iter);
                 if iter_string.is_empty() {
-                    infer_expr_with_rules(
-                        rule_env,
-                        &iter,
-                        &mut rule_inferrer,
-                        type_db,
-                    );
+                    infer_expr_with_rules(rule_env, &iter, &mut rule_inferrer, type_db);
                     continue;
                 }
                 let key_type = rule_inferrer.get_new_typevar();
                 let val_type = rule_inferrer.get_new_typevar();
-                rule_inferrer.apply_for_in_stmt_rule(
-                    &iter_string,
-                    &key_type,
-                    &val_type,
-                    rule_env,
-                );
+                rule_inferrer.apply_for_in_stmt_rule(&iter_string, &key_type, &val_type, rule_env);
             }
             Stmt::Expr(StmtExpr { value, .. }) => {
                 infer_expr_with_rules(rule_env, value, &mut rule_inferrer, type_db);
@@ -215,11 +194,7 @@ fn infer_expr_with_rules(
 
             if attr_name.eq("clear") || attr_name.eq("copy") {
                 let typevar = rule_inferrer.get_new_typevar();
-                rule_inferrer.apply_list_operation_rule(
-                    &value_string,
-                    &typevar,
-                    rule_env,
-                );
+                rule_inferrer.apply_list_operation_rule(&value_string, &typevar, rule_env);
             }
 
             for arg in &call.args {
@@ -228,12 +203,7 @@ fn infer_expr_with_rules(
         }
         Expr::Subscript(subscript) => {
             // make sure to infer type of value too!
-            infer_expr_with_rules(
-                rule_env,
-                &subscript.value,
-                rule_inferrer,
-                type_db,
-            );
+            infer_expr_with_rules(rule_env, &subscript.value, rule_inferrer, type_db);
 
             let value_string = get_node_string(&subscript.value);
 
@@ -252,18 +222,9 @@ fn infer_expr_with_rules(
                 .unwrap_or_else(|| rule_inferrer.get_new_typevar());
 
             if let Type::ConcreteType(ConcreteValue::Int) = slice_type {
-                rule_inferrer.apply_index_rule(
-                    &value_string,
-                    &subscript_type,
-                    rule_env,
-                );
+                rule_inferrer.apply_index_rule(&value_string, &subscript_type, rule_env);
             } else {
-                rule_inferrer.apply_key_rule(
-                    &value_string,
-                    &slice_type,
-                    &subscript_type,
-                    rule_env,
-                );
+                rule_inferrer.apply_key_rule(&value_string, &slice_type, &subscript_type, rule_env);
             }
 
             if subscript.value.is_subscript_expr() {
@@ -429,48 +390,6 @@ fn get_node_string(node: &Expr) -> String {
 }
 
 /**
- * A special variation of unification where we unify types to
- * resolve rule types. Returns the unified type rather than a substitution.
- */
-pub fn rule_unify_types(expected: &Type, inferred: &Type) -> Type {
-    match (expected, inferred) {
-        (Type::Mapping(k1, v1), Type::Mapping(k2, v2)) => {
-            let key = rule_unify_types(k1, k2);
-            let value = rule_unify_types(v1, v2);
-            Type::Mapping(Box::new(key), Box::new(value))
-        }
-        (Type::List(t1), Type::List(t2)) => Type::List(Box::new(rule_unify_types(t1, t2))),
-        (Type::Mapping(key, val), Type::List(elt)) | (Type::List(elt), Type::Mapping(key, val))
-            if **key == Type::ConcreteType(ConcreteValue::Int) =>
-        {
-            Type::List(Box::new(rule_unify_types(elt, val)))
-        }
-        (Type::Mapping(key, val), Type::ConcreteType(ConcreteValue::Str))
-        | (Type::ConcreteType(ConcreteValue::Str), Type::Mapping(key, val))
-            if **key == Type::ConcreteType(ConcreteValue::Int) =>
-        {
-            Type::List(Box::new(rule_unify_types(
-                &Type::ConcreteType(ConcreteValue::Str),
-                val,
-            )))
-        }
-        (Type::Mapping(key, val), Type::Range) | (Type::Range, Type::Mapping(key, val))
-            if **key == Type::ConcreteType(ConcreteValue::Int) =>
-        {
-            Type::List(Box::new(rule_unify_types(
-                &Type::ConcreteType(ConcreteValue::Int),
-                val,
-            )))
-        }
-        (Type::TypeVar(..), typ) | (typ, Type::TypeVar(..)) => typ.clone(),
-        (Type::ConcreteType(t1), Type::ConcreteType(t2)) if t1 != t2 => {
-            panic!("Cannot unify incompatible types: {:?} and {:?}", t1, t2);
-        }
-        _ => expected.clone(),
-    }
-}
-
-/**
  * Helper to tank string type prediction on every level of the subscript.
  */
 pub fn remove_types_from_subscript_heuristic(
@@ -550,12 +469,7 @@ impl RuleInferrer {
      * This rule states that when we detect a call in the form
      * x.m(a), where m is a list operation, x is definitely a list.
      */
-    pub fn apply_list_operation_rule(
-        &mut self,
-        node: &str,
-        typ: &Type,
-        rule_env: &mut RuleEnv,
-    ) {
+    pub fn apply_list_operation_rule(&mut self, node: &str, typ: &Type, rule_env: &mut RuleEnv) {
         let rule = Vec::from([(Type::List(Box::new(typ.clone())), 10.0)]);
         self.apply_rule(node, &rule, rule_env);
     }
@@ -565,12 +479,7 @@ impl RuleInferrer {
      * This rule states that when we call len on a variable,
      * this means that it is either a string, a sequence, or a set.
      */
-    pub fn apply_len_rule(
-        &mut self,
-        node: &str,
-        typ: &Type,
-        rule_env: &mut RuleEnv,
-    ) {
+    pub fn apply_len_rule(&mut self, node: &str, typ: &Type, rule_env: &mut RuleEnv) {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(typ.clone())), 2.0),
@@ -585,12 +494,7 @@ impl RuleInferrer {
      * this means that it is either a string or a sequence (sets cannot be indexed).
      * TODO: Add mapping type.
      */
-    pub fn apply_index_rule(
-        &mut self,
-        node: &str,
-        typ: &Type,
-        rule_env: &mut RuleEnv,
-    ) {
+    pub fn apply_index_rule(&mut self, node: &str, typ: &Type, rule_env: &mut RuleEnv) {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(typ.clone())), 2.0),
@@ -638,12 +542,7 @@ impl RuleInferrer {
         self.apply_rule(node, &rule, rule_env);
     }
 
-    pub fn apply_rule(
-        &mut self,
-        node: &str,
-        rule: &Rule,
-        rule_env: &mut RuleEnv,
-    ) {
+    pub fn apply_rule(&mut self, node: &str, rule: &Rule, rule_env: &mut RuleEnv) {
         self.apply_rule_to_rule_env(node, rule, rule_env);
     }
 

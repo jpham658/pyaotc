@@ -7,17 +7,15 @@ use std::{
 use rustpython_ast::ExprList;
 use rustpython_parser::{
     ast::{
-        located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprName, ExprSubscript, Ranged,
-        Stmt, StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
+        located::UnaryOp, Constant, Expr, ExprCall, ExprConstant, ExprSubscript, Ranged, Stmt,
+        StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtWhile,
     },
     text_size::TextRange,
 };
 
 use crate::{
     astutils::serialise_subscript,
-    rule_typing::{
-        get_inferred_rule_types, infer_stmts_with_rules, rule_unify_types, RuleEnv,
-    },
+    rule_typing::{get_inferred_rule_types, infer_stmts_with_rules, RuleEnv},
 };
 
 //  ====================================================
@@ -374,9 +372,7 @@ impl TypeInferrer {
         }
 
         // infer with rules too
-        if let Err(e) =
-            infer_stmts_with_rules(&mut rule_env, &func.body, type_db)
-        {
+        if let Err(e) = infer_stmts_with_rules(&mut rule_env, &func.body, type_db) {
             eprintln!("RuleInferrenceError: {}", e.message);
             return Err(InferenceError { message: e.message });
         }
@@ -405,24 +401,13 @@ impl TypeInferrer {
         }
 
         // update arg types with rule-inferred types if necessary
-        let mut updated_arg_types = arg_types.clone();
         for (arg, original_type) in args.iter().zip(arg_types.iter()) {
             let arg_name = arg.as_arg().arg.as_str().to_string();
 
             if let Some(rule_scheme) = inferred_rule_type_env.get(&arg_name) {
                 let rule_type = &rule_scheme.type_name;
-                let unified_type = rule_unify_types(original_type, rule_type);
-                let arg_index = args
-                    .iter()
-                    .position(|a| a.as_arg().arg == arg_name)
-                    .unwrap();
-                updated_arg_types[arg_index] = unified_type.clone();
-            } else {
-                let arg_index = args
-                    .iter()
-                    .position(|a| a.as_arg().arg == arg_name)
-                    .unwrap();
-                updated_arg_types[arg_index] = original_type.clone();
+                let unifier = unify(original_type, rule_type)?;
+                subs = compose_subs(&subs, &unifier);
             }
         }
 
@@ -463,7 +448,7 @@ impl TypeInferrer {
             return_type = resultant_type
         }
 
-        let func_type = if updated_arg_types.len() == 0 {
+        let func_type = if arg_types.len() == 0 {
             let return_type = match return_type {
                 Type::Scheme(Scheme { type_name, .. }) => *type_name,
                 _ => return_type,
@@ -474,7 +459,7 @@ impl TypeInferrer {
                 output: Box::new(return_type),
             })
         } else {
-            updated_arg_types
+            arg_types
                 .into_iter()
                 .rev()
                 .fold(return_type.clone(), |typ, arg_type| {
@@ -536,10 +521,7 @@ impl TypeInferrer {
                         Type::ConcreteType(ConcreteValue::Str),
                         Type::ConcreteType(ConcreteValue::Str),
                     ) => Type::ConcreteType(ConcreteValue::Str),
-                    (
-                        Type::List(elt_type1),
-                        Type::List(elt_type2),
-                    ) => {
+                    (Type::List(elt_type1), Type::List(elt_type2)) => {
                         let unifier = unify(&elt_type1, &elt_type2)?;
                         composite_subs = compose_subs(&composite_subs, &unifier);
                         Type::List(elt_type1)
