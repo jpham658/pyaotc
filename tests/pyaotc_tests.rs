@@ -11,9 +11,7 @@ fn main() {
             fs::read_to_string(p)
                 .unwrap()
                 .lines()
-                // Skip non-commented lines at the start of the file.
                 .skip_while(|l| !l.starts_with("#"))
-                // Extract consecutive commented lines.
                 .take_while(|l| l.starts_with("#"))
                 .map(|l| &l[1..])
                 .collect::<Vec<_>>()
@@ -26,14 +24,9 @@ fn main() {
 
             let mut compiler = Command::new("cargo");
             compiler.args(&["run", "--", test_file_path]);
-            println!("Running compiler command: cargo run -- {}", test_file_path);
 
             let binary_cmd = format!("./{}", binary_name);
             let runtime = Command::new(binary_cmd);
-            println!(
-                "Running runtime command: ./{} {}",
-                binary_name, test_file_path
-            );
 
             vec![("Compiler", compiler), ("Run-time", runtime)]
         })

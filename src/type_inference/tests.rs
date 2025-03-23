@@ -30,7 +30,7 @@ mod inferrer_tests {
             kind: None,
             value: Constant::Bool(true),
         };
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let expr = Expr::Constant(lit);
         let expected_res = (Sub::new(), Type::ConcreteType(ConcreteValue::Bool));
         assert_eq!(
@@ -43,7 +43,7 @@ mod inferrer_tests {
     fn test_infer_name() {
         let mut env = TypeEnv::new();
         let mut type_db = NodeTypeDB::new();
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         env.insert(
             "x".to_string(),
             Scheme {
@@ -78,7 +78,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_call() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let mut type_db = NodeTypeDB::new();
         let mut env = TypeEnv::new();
         env.insert(
@@ -116,7 +116,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_call_with_more_than_one_argument() {
-        let mut type_inferencer = TypeInferrer::new();
+        let mut type_inferencer = TypeInferrer::new(None);
         let mut type_db = NodeTypeDB::new();
         let mut env = TypeEnv::new();
         let add_funcdef = Type::FuncType(FuncTypeValue {
@@ -167,7 +167,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_call_type_error() {
-        let mut type_inferencer = TypeInferrer::new();
+        let mut type_inferencer = TypeInferrer::new(None);
         let mut type_db = NodeTypeDB::new();
         let mut env = TypeEnv::new();
         let add_funcdef = Type::FuncType(FuncTypeValue {
@@ -215,7 +215,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_function() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let mut env = TypeEnv::new();
         let mut type_db = NodeTypeDB::new();
         let args = generate_func_args(&["x"]);
@@ -266,7 +266,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_function_with_no_args() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let mut env = TypeEnv::new();
         let mut type_db = NodeTypeDB::new();
         let body = vec![Stmt::Return(StmtReturn {
@@ -302,7 +302,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_function_with_multiple_args() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let mut env = TypeEnv::new();
         let mut type_db = NodeTypeDB::new();
         let args = generate_func_args(&["x", "y"]);
@@ -368,7 +368,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_function_with_no_return() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let mut env = TypeEnv::new();
         let mut type_db = NodeTypeDB::new();
         let args = generate_func_args(&["x"]);
@@ -418,7 +418,7 @@ mod inferrer_tests {
 
     #[test]
     fn test_infer_function_with_different_return_types() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let mut env = TypeEnv::new();
         let mut type_db = NodeTypeDB::new();
         let factorial_fn = r#"
@@ -443,7 +443,7 @@ def return_string_or_bool(x):
 
     #[test]
     fn test_infer_assignment() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let mut env = TypeEnv::new();
         let mut type_db = NodeTypeDB::new();
         let assign = Stmt::Assign(StmtAssign {
@@ -469,7 +469,7 @@ def return_string_or_bool(x):
 
     #[test]
     fn infer_range_call() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let mut env = TypeEnv::new();
         let mut type_db = NodeTypeDB::new();
         env.insert(
@@ -939,7 +939,7 @@ mod instantiate_tests {
 
     #[test]
     fn test_instantiate_with_no_free_vars() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let typ = Type::FuncType(FuncTypeValue {
             input: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
             output: Box::new(Type::TypeVar(TypeVar("b".to_string()))),
@@ -972,7 +972,7 @@ mod instantiate_tests {
 
     #[test]
     fn test_instantiate_with_free_vars() {
-        let mut type_inferrer = TypeInferrer::new();
+        let mut type_inferrer = TypeInferrer::new(None);
         let typ = Type::FuncType(FuncTypeValue {
             input: Box::new(Type::TypeVar(TypeVar("a".to_string()))),
             output: Box::new(Type::TypeVar(TypeVar("b".to_string()))),

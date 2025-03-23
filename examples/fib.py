@@ -34,3 +34,4 @@ def fib(n):
         b = temp+b
 
 fib(1000)
+fib(1000.0)

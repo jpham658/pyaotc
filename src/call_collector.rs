@@ -58,21 +58,17 @@ impl Visitor for FunctionCallCollector {
     fn visit_stmt(&mut self, stmt: Stmt) {
         match stmt {
             Stmt::FunctionDef(func_def) => {
-                // Visit the function body
                 for body_stmt in &func_def.body {
                     self.visit_stmt(body_stmt.clone());
                 }
             }
             Stmt::Assign(assign) => {
-                // Visit the value being assigned
                 self.visit_expr(*assign.value.clone());
             }
             Stmt::Expr(expr_stmt) => {
-                // Visit the expression
                 self.visit_expr(*expr_stmt.value.clone());
             }
             Stmt::If(if_stmt) => {
-                // Visit the condition, then the body, and finally the else block
                 self.visit_expr(*if_stmt.test.clone());
                 for body_stmt in &if_stmt.body {
                     self.visit_stmt(body_stmt.clone());
@@ -82,7 +78,6 @@ impl Visitor for FunctionCallCollector {
                 }
             }
             Stmt::For(for_stmt) => {
-                // Visit the iterable, then the body
                 self.visit_expr(*for_stmt.iter.clone());
                 for body_stmt in &for_stmt.body {
                     self.visit_stmt(body_stmt.clone());
@@ -118,6 +113,11 @@ impl Visitor for FunctionCallCollector {
             }
             Expr::UnaryOp(unary_op) => {
                 self.visit_expr(*unary_op.operand.clone());
+            }
+            Expr::List(list) => {
+                for elt in list.elts {
+                    self.visit_expr(elt);
+                }
             }
             _ => {
                 self.generic_visit_expr(expr);

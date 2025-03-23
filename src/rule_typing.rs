@@ -260,10 +260,6 @@ fn infer_expr_with_rules(
                 .cloned()
                 .unwrap_or_else(|| rule_inferrer.get_new_typevar());
 
-            println!("{:?}", left_type);
-            println!("{:?}", right_type);
-            println!("{:?}", rule_env);
-
             if let Type::TypeVar(..) = left_type {
                 return;
             }
@@ -341,23 +337,23 @@ fn get_most_likely_type(heuristic: &Heuristic) -> Type {
 fn type_order(typ: &Type) -> i32 {
     match typ {
         Type::ConcreteType(ConcreteValue::Str) => 1,
-        Type::Mapping(key_type, val_type) => {
-            if !contains_rule_generated_typevar(key_type)
-                && !contains_rule_generated_typevar(val_type)
-            {
+        Type::List(elt_type) => {
+            if !contains_rule_generated_typevar(elt_type) {
                 2
             } else {
                 3
             }
         }
-        Type::List(elt_type) => {
-            if !contains_rule_generated_typevar(elt_type) {
+        Type::Mapping(key_type, val_type) => {
+            if !contains_rule_generated_typevar(key_type)
+                && !contains_rule_generated_typevar(val_type)
+            {
                 3
             } else {
                 4
             }
         }
-        Type::Range => 4,
+        Type::Range => 5,
         _ => 0,
     }
 }

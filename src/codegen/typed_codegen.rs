@@ -133,7 +133,6 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             })
             .collect();
 
-        // TODO: PLEASE PLEASE PLEASE refactor this omg it's so ugly wtf
         let llvm_return_type = match &return_type {
             Type::ConcreteType(ConcreteValue::Int) => {
                 compiler.context.i64_type().fn_type(&llvm_arg_types, false)
@@ -777,7 +776,7 @@ impl LLVMTypedCodegen for ExprSubscript {
         }
 
         Err(BackendError {
-            message: "Indexing non-list and non-range values is not yet implemented.",
+            message: "Indexing values for anything other than a string, list, or range is not yet implemented.",
         })
     }
 }
@@ -1233,9 +1232,6 @@ impl LLVMTypedCodegen for ExprCall {
         // validate function args
         let arg_count = function.count_params();
 
-        println!("func_name {}", func_name);
-        println!("arg_count {}", arg_count);
-        println!("self.args.len() {}", self.args.len());
         if !func_name.eq("print") && arg_count != self.args.len() as u32 {
             return Err(BackendError {
                 message: "Incorrect number of arguments provided.",
@@ -1257,7 +1253,7 @@ impl LLVMTypedCodegen for ExprCall {
         let fn_arg_types = match compiler.func_types.borrow().get(func_name) {
             None => {
                 return Err(BackendError {
-                    message: "Function call not mapped to type...",
+                    message: "Function is not defined.",
                 })
             }
             Some(typ) => {

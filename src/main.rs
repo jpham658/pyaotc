@@ -17,7 +17,9 @@ use rustpython_parser::{
     Parse,
 };
 use std::{env, fs, path::Path};
-use type_inference::{free_type_vars_in_type_env, infer_stmts, NodeTypeDB, TypeEnv, TypeInferrer};
+use type_inference::{
+    bounded_type_vars_in_type_env, infer_stmts, NodeTypeDB, TypeEnv, TypeInferrer,
+};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -47,30 +49,29 @@ fn main() {
     // to decide if we generically compile or not...
     let mut compiler = Compiler::new(&context, false);
     let mut type_env = TypeEnv::new();
-    let mut type_inferrer = TypeInferrer::new();
+    let mut type_inferrer = TypeInferrer::new(None);
     let mut type_db = NodeTypeDB::new();
 
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
-            // print_ast(&ast);
             // normal type inference
             infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
             println!("{:?}", type_env);
 
-            // TODO: Add call collector support to type inferrer
-            // if we still have unbound types, use call collector to instantiate functions with
+            // if we still have bound types, use call collector to instantiate functions with
             // most common argument types
             let max_inference_rounds = 3;
             let mut inference_round = 0;
-            while inference_round < max_inference_rounds
-                && !free_type_vars_in_type_env(&type_env).is_empty()
-            {
-                // let mut call_collector = FunctionCallCollector::new(&type_db);
-                // call_collector.collect_calls(&ast);
-                // println!("{:?}", call_collector.most_common_arg_types());
-                infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
-                inference_round += 1;
-            }
+            // while inference_round < max_inference_rounds
+            //     && !bounded_type_vars_in_type_env(&type_env).is_empty()
+            // {
+            //     let mut call_collector = FunctionCallCollector::new(&type_db);
+            //     call_collector.collect_calls(&ast);
+            //     let most_common_arg_types = call_collector.most_common_arg_types();
+            //     type_inferrer = TypeInferrer::new(Some(most_common_arg_types));
+            //     infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
+            //     inference_round += 1;
+            // }
 
             compiler.compile(&ast, &type_db, file_name);
             // compiler.compile_generically(&ast, file_name);

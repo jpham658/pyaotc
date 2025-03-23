@@ -1,10 +1,7 @@
-def fib(n):
-    a = 0
-    b = 1
-    while a < n:
-        print(a)
-        temp = a
-        a = b 
-        b = temp+b
+def add(x,y):
+    return x + y
 
-fib(1000)
+print(add(1,1))
+print(add("hello ", "world"))
+print(add(2,4))
+print(add(2.0,4))

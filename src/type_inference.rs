@@ -157,13 +157,15 @@ type TypeInferenceRes = Result<(Sub, Type), InferenceError>;
 pub struct TypeInferrer {
     fresh_var_generator: FreshVariableGenerator,
     ret_types: Vec<Vec<Type>>, // stack to keep track of return types in function
+    most_common_arg_types: Option<HashMap<String, Vec<Type>>>,
 }
 
 impl TypeInferrer {
-    pub fn new() -> Self {
+    pub fn new(most_common_arg_types: Option<HashMap<String, Vec<Type>>>) -> Self {
         Self {
             fresh_var_generator: FreshVariableGenerator::new("v"),
             ret_types: Vec::new(),
+            most_common_arg_types,
         }
     }
 
@@ -341,8 +343,18 @@ impl TypeInferrer {
         let args = &func.args.args;
         let arg_types = args
             .iter()
-            .map(|arg| match &arg.as_arg().annotation {
-                None => Type::TypeVar(TypeVar(self.fresh_var_generator.next())),
+            .enumerate() // Get index of each argument
+            .map(|(i, arg)| match &arg.as_arg().annotation {
+                None => {
+                    if let Some(most_common_args) = &self.most_common_arg_types {
+                        if let Some(types) = most_common_args.get(func.name.as_str()) {
+                            if let Some(most_common_type) = types.get(i) {
+                                return most_common_type.clone();
+                            }
+                        }
+                    }
+                    Type::TypeVar(TypeVar(self.fresh_var_generator.next()))
+                }
                 Some(expr) => verify_type_ann(&expr).unwrap().1, // get type
             })
             .collect::<Vec<_>>();
@@ -1155,6 +1167,17 @@ pub fn free_type_vars_in_type_env(env: &TypeEnv) -> BTreeSet<String> {
     env.values()
         .into_iter()
         .map(|scheme| free_type_var(&Type::Scheme(scheme.clone())))
+        .flatten()
+        .collect::<BTreeSet<_>>()
+}
+
+/**
+ * Helper to get all bounded type variables for a type environment.
+ */
+pub fn bounded_type_vars_in_type_env(env: &TypeEnv) -> BTreeSet<String> {
+    env.values()
+        .into_iter()
+        .map(|scheme| scheme.bounded_vars.clone())
         .flatten()
         .collect::<BTreeSet<_>>()
 }
