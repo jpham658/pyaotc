@@ -350,6 +350,9 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    //     extern char *str_concat(const char *str1, const char *str2);
+    // extern char *str_mult(const char *str1, int n);
+
     pub fn setup_str_fns(&self) {
         let sizet_type = self.context.i64_type();
         let str_type = self.context.i8_type().ptr_type(AddressSpace::default());
@@ -358,10 +361,14 @@ impl<'ctx> Compiler<'ctx> {
         let str_len_fn_type = sizet_type.fn_type(&[str_type.into()], false);
         let str_index_fn_type = str_type.fn_type(&[str_type.into(), sizet_type.into()], false);
         let str_eq_fn_type = bool_type.fn_type(&[str_type.into(), str_type.into()], false);
+        let str_concat_fn_type = str_type.fn_type(&[str_type.into(), str_type.into()], false);
+        let str_mult_fn_type = str_type.fn_type(&[str_type.into(), sizet_type.into()], false);
         self.module.add_function("str_len", str_len_fn_type, None);
         self.module
             .add_function("str_index", str_index_fn_type, None);
         self.module.add_function("str_eq", str_eq_fn_type, None);
+        self.module.add_function("str_concat", str_concat_fn_type, None);
+        self.module.add_function("str_mult", str_mult_fn_type, None);
     }
 
     pub fn setup_range_fns(&self) {

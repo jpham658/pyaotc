@@ -1436,7 +1436,7 @@ impl LLVMTypedCodegen for ExprBinOp {
                         .get_struct_type("struct.List")
                         .unwrap()
                         .ptr_type(AddressSpace::default());
-                    let void_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+                    let str_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
                     let left_ptr_type = left.into_pointer_value().get_type();
                     let right_ptr_type = right.into_pointer_value().get_type();
 
@@ -1452,15 +1452,15 @@ impl LLVMTypedCodegen for ExprBinOp {
                                 ],
                                 "",
                             )
-                            .expect("Could not create .")
+                            .expect("Could not add lists.")
                             .as_any_value_enum();
                         Some(res)
-                    } else if left_ptr_type == void_type && right_ptr_type == void_type {
-                        let strconcat_fn = compiler.module.get_function("strconcat").unwrap();
+                    } else if left_ptr_type == str_type && right_ptr_type == str_type {
+                        let str_concat_fn = compiler.module.get_function("str_concat").unwrap();
                         let res = compiler
                             .builder
                             .build_call(
-                                strconcat_fn,
+                                str_concat_fn,
                                 &[
                                     left.into_pointer_value().into(),
                                     right.into_pointer_value().into(),
@@ -1531,6 +1531,37 @@ impl LLVMTypedCodegen for ExprBinOp {
                         .build_int_mul(left.into_int_value(), right.into_int_value(), &"mul")
                         .expect("Could not perform int multiplication")
                         .as_any_value_enum()
+                } else if left.is_pointer_value() && right.is_int_value() {
+                    let str_type = compiler.context.i8_type().ptr_type(AddressSpace::default());
+                    let left_as_ptr = left.into_pointer_value();
+
+                    let res = if left_as_ptr.get_type() == str_type {
+                        let str_mult_fn = compiler.module.get_function("str_mult").unwrap();
+                        let res = compiler
+                            .builder
+                            .build_call(
+                                str_mult_fn,
+                                &[
+                                    left_as_ptr.into(),
+                                    right.into_int_value().into(),
+                                ],
+                                "",
+                            )
+                            .expect("Could not multiply string.")
+                            .as_any_value_enum();
+                        Some(res)
+                    } else {
+                        None
+                    };
+
+                    match res {
+                        Some(res) => res,
+                        _ => {
+                            return Err(BackendError {
+                                message: "Invalid operand types for multiplication.",
+                            });
+                        }
+                    }
                 } else {
                     let float_map = get_left_and_right_as_floats(compiler, left, right);
                     let lhs = float_map
@@ -1541,6 +1572,8 @@ impl LLVMTypedCodegen for ExprBinOp {
                         .get(&right)
                         .and_then(|opt| *opt)
                         .expect("Right operand could not be converted.");
+                    println!("lhs {:?}", lhs);
+                    println!("rhs {:?}", rhs);
                     compiler
                         .builder
                         .build_float_mul(lhs, rhs, &"fmul")

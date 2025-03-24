@@ -55,24 +55,25 @@ fn main() {
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
             // normal type inference
+            print_ast(&ast);
             infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
-            println!("{:?}", type_env);
 
             // if we still have bound types, use call collector to instantiate functions with
             // most common argument types
             let max_inference_rounds = 3;
             let mut inference_round = 0;
-            // while inference_round < max_inference_rounds
-            //     && !bounded_type_vars_in_type_env(&type_env).is_empty()
-            // {
-            //     let mut call_collector = FunctionCallCollector::new(&type_db);
-            //     call_collector.collect_calls(&ast);
-            //     let most_common_arg_types = call_collector.most_common_arg_types();
-            //     type_inferrer = TypeInferrer::new(Some(most_common_arg_types));
-            //     infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
-            //     inference_round += 1;
-            // }
-
+            while inference_round < max_inference_rounds
+                && !bounded_type_vars_in_type_env(&type_env).is_empty()
+            {
+                let mut call_collector = FunctionCallCollector::new(&type_db);
+                call_collector.collect_calls(&ast);
+                let most_common_arg_types = call_collector.most_common_arg_types();
+                type_inferrer = TypeInferrer::new(Some(most_common_arg_types));
+                infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
+                inference_round += 1;
+            }
+            
+            println!("{:?}", type_env);
             compiler.compile(&ast, &type_db, file_name);
             // compiler.compile_generically(&ast, file_name);
         }

@@ -436,6 +436,8 @@ impl TypeInferrer {
                 .map(|t| apply(&subs, &t))
                 .collect();
 
+            println!("ret types {:?}", ret_types);
+
             let mut resultant_type = if ret_types.is_empty() {
                 Type::ConcreteType(ConcreteValue::None)
             } else {
@@ -514,13 +516,17 @@ impl TypeInferrer {
                     self.infer_expression(&mut new_env, &binop.right, type_db)?;
 
                 let mut composite_subs = compose_subs(&sub_left, &sub_right);
+                let left_type = match left_type {
+                    Type::Scheme(Scheme { type_name, ..}) => *type_name,
+                    _ => left_type
+                };
+
+                let right_type = match right_type {
+                    Type::Scheme(Scheme { type_name, ..}) => *type_name,
+                    _ => right_type
+                };
+
                 let resultant_type = match (left_type, right_type) {
-                    (Type::Scheme(Scheme { type_name, .. }), typ)
-                    | (typ, Type::Scheme(Scheme { type_name, .. })) => {
-                        let unifier = unify(&type_name, &typ)?;
-                        composite_subs = compose_subs(&composite_subs, &unifier);
-                        typ
-                    }
                     (
                         Type::ConcreteType(ConcreteValue::Int),
                         Type::ConcreteType(ConcreteValue::Int),
@@ -537,6 +543,11 @@ impl TypeInferrer {
                         let unifier = unify(&elt_type1, &elt_type2)?;
                         composite_subs = compose_subs(&composite_subs, &unifier);
                         Type::List(elt_type1)
+                    }
+                    (typ1, typ2) => {
+                        let unifier = unify(&typ1, &typ2)?;
+                        composite_subs = compose_subs(&composite_subs, &unifier);
+                        typ1
                     }
                     _ => {
                         return Err(InferenceError {
@@ -1312,8 +1323,6 @@ pub fn unify(t1: &Type, t2: &Type) -> Result<Sub, InferenceError> {
                     || val1.eq(&ConcreteValue::Str)
                     || val2.eq(&ConcreteValue::Str))
             {
-                println!("{:?}", val1);
-                println!("{:?}", val2);
                 return Err(InferenceError {
                     message: "Mismatching concrete types".to_string(),
                 });

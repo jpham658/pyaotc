@@ -1,13 +1,5 @@
 #include "object.h"
-
-char *strconcat(const char *str1, const char *str2)
-{
-    size_t new_str_len = strlen(str1) + strlen(str2) + 1;
-    char *new_str_ptr = (char *)malloc(new_str_len);
-    strcpy(new_str_ptr, str1);
-    strcat(new_str_ptr, str2);
-    return new_str_ptr;
-}
+#include "../collections/string_utils.h"
 
 Object *Add(Object *left, Object *right)
 {
@@ -75,7 +67,7 @@ Object *Add(Object *left, Object *right)
     {
         const char *left_as_str = object_as_str(left);
         const char *right_as_str = object_as_str(right);
-        return new_str(strconcat(left_as_str, right_as_str));
+        return new_str(str_concat(left_as_str, right_as_str));
     }
     fprintf(stderr, "Incompatible types for addition.\n");
     exit(EXIT_FAILURE);

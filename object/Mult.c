@@ -1,27 +1,5 @@
 #include "object.h"
-
-char *strmult(const char *str, int n)
-{
-    if (n <= 0)
-    {
-        return "";
-    }
-
-    int len = strlen(str);
-    char *result = (char *)malloc(len * n + 1);
-    if (!result)
-    {
-        return NULL;
-    }
-
-    result[0] = '\0';
-    for (int i = 0; i < n; i++)
-    {
-        strcat(result, str);
-    }
-
-    return result;
-}
+#include "../collections/string_utils.h"
 
 Object *Mult(Object *left, Object *right)
 {
@@ -89,7 +67,7 @@ Object *Mult(Object *left, Object *right)
     {
         const char *left_as_str = object_as_str(left);
         word *right_as_int = object_as_int(right);
-        return new_str(strmult(left_as_str, right_as_int));
+        return new_str(str_mult(left_as_str, right_as_int));
     }
     fprintf(stderr, "Incompatible types for multiplication.\n");
     exit(EXIT_FAILURE);

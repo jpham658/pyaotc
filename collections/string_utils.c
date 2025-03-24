@@ -10,7 +10,39 @@ size_t str_len(const char *str)
     return strlen(str);
 }
 
-const char **str_index(const char *str, word index)
+char *str_concat(const char *str1, const char *str2)
+{
+    size_t new_str_len = strlen(str1) + strlen(str2) + 1;
+    char *new_str_ptr = (char *)malloc(new_str_len);
+    strcpy(new_str_ptr, str1);
+    strcat(new_str_ptr, str2);
+    return new_str_ptr;
+}
+
+char *str_mult(const char *str, word n)
+{
+    if (n <= 0)
+    {
+        return "";
+    }
+
+    int len = strlen(str);
+    char *result = (char *)malloc(len * n + 1);
+    if (!result)
+    {
+        return NULL;
+    }
+
+    result[0] = '\0';
+    for (int i = 0; i < n; i++)
+    {
+        strcat(result, str);
+    }
+
+    return result;
+}
+
+    const char **str_index(const char *str, word index)
 {
     size_t len = str_len(str);
 
