@@ -5,7 +5,7 @@ void test_int_int_add()
 {
     Object *obj1 = new_int(2);
     Object *obj2 = new_int(10);
-    assert(false);
+    assert(Add(obj1, obj2) == new_int(12));
 }
 
 void test_bool_bool_add()
