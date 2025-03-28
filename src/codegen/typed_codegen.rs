@@ -1541,10 +1541,7 @@ impl LLVMTypedCodegen for ExprBinOp {
                             .builder
                             .build_call(
                                 str_mult_fn,
-                                &[
-                                    left_as_ptr.into(),
-                                    right.into_int_value().into(),
-                                ],
+                                &[left_as_ptr.into(), right.into_int_value().into()],
                                 "",
                             )
                             .expect("Could not multiply string.")
@@ -1572,8 +1569,6 @@ impl LLVMTypedCodegen for ExprBinOp {
                         .get(&right)
                         .and_then(|opt| *opt)
                         .expect("Right operand could not be converted.");
-                    println!("lhs {:?}", lhs);
-                    println!("rhs {:?}", rhs);
                     compiler
                         .builder
                         .build_float_mul(lhs, rhs, &"fmul")
@@ -1607,6 +1602,96 @@ impl LLVMTypedCodegen for ExprBinOp {
                     .build_float_div(lhs, rhs, &"fdiv")
                     .expect("Could not perform float division")
                     .as_any_value_enum()
+            }
+            Operator::Mod => {
+                if left.is_int_value() && right.is_int_value() {
+                    compiler
+                        .builder
+                        .build_int_signed_rem(left.into_int_value(), right.into_int_value(), &"mod")
+                        .expect("Could not perform int modulo")
+                        .as_any_value_enum()
+                } else {
+                    let float_map = get_left_and_right_as_floats(compiler, left, right);
+                    let lhs = float_map
+                        .get(&left)
+                        .and_then(|opt| *opt)
+                        .expect("Left operand could not be converted.");
+                    let rhs = float_map
+                        .get(&right)
+                        .and_then(|opt| *opt)
+                        .expect("Right operand could not be converted.");
+                    compiler
+                        .builder
+                        .build_float_rem(lhs, rhs, &"fmod")
+                        .expect("Could not perform float modulo")
+                        .as_any_value_enum()
+                }
+            }
+            Operator::FloorDiv => {
+                if left.is_int_value() && right.is_int_value() {
+                    let div = compiler
+                        .builder
+                        .build_int_signed_div(left.into_int_value(), right.into_int_value(), "div")
+                        .expect("Could not perform int division");
+
+                    let mod_val = compiler
+                        .builder
+                        .build_int_signed_rem(left.into_int_value(), right.into_int_value(), "mod")
+                        .expect("Could not perform int modulo");
+
+                    let zero = compiler.context.i64_type().const_int(0, false);
+                    let cond = compiler
+                        .builder
+                        .build_int_compare(inkwell::IntPredicate::EQ, mod_val, zero, "is_zero")
+                        .expect("Could not build int compare.");
+                    let floored_val = compiler
+                        .builder
+                        .build_int_sub(div, zero, "floored_div")
+                        .expect("Could not floor value.");
+
+                    let result = compiler
+                        .builder
+                        .build_select(cond, div, floored_val, "floored_result")
+                        .expect("Could not select floored result");
+
+                    result.as_any_value_enum()
+                } else {
+                    let float_map = get_left_and_right_as_floats(compiler, left, right);
+                    let lhs = float_map
+                        .get(&left)
+                        .and_then(|opt| *opt)
+                        .expect("Left operand could not be converted.");
+                    let rhs = float_map
+                        .get(&right)
+                        .and_then(|opt| *opt)
+                        .expect("Right operand could not be converted.");
+
+                    let division_result = compiler
+                        .builder
+                        .build_float_div(lhs, rhs, "fdiv")
+                        .expect("Could not perform float division");
+
+                    let floor_fn = match compiler.module.get_function("llvm.floor.f64") {
+                        Some(func) => func,
+                        None => {
+                            let f64_type = compiler.context.f64_type();
+                            let floor_fn_type = f64_type.fn_type(&[f64_type.into()], false);
+                            compiler.module.add_function("llvm.floor.f64", floor_fn_type, None)
+                        }
+                    };
+
+                    let floored_result = compiler
+                        .builder
+                        .build_call(
+                            floor_fn,
+                            &[division_result.into()],
+                            "floored_fdiv",
+                        )
+                        .expect("Could not floor float division")
+                        .as_any_value_enum();
+
+                    floored_result
+                }
             }
             _ => {
                 return Err(BackendError {

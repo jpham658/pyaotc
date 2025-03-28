@@ -10,6 +10,9 @@
 extern Object *Add(Object *left, Object *right);
 extern Object *Sub(Object *left, Object *right);
 extern Object *Mult(Object *left, Object *right);
+extern Object *Div(Object *left, Object *right);
+extern Object *FloorDiv(Object *left, Object *right);
+extern Object *Mod(Object *left, Object *right);
 
 // Unary ops
 extern Object *UAdd(Object *operand);
@@ -22,6 +25,7 @@ extern bool *Or(int num_args, ...);
 
 // Comparison ops
 extern bool Eq(Object *left, Object *right);
+extern bool NotEq(Object *left, Object *right);
 extern bool GtE(Object *left, Object *right);
 extern bool Lt(Object *left, Object *right);
 

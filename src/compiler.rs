@@ -220,7 +220,7 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let clang_status = Command::new("clang")
-            .args([&obj_file_path, "-lgc", "-no-pie", "-o", &file_name])
+            .args([&obj_file_path, "-lgc", "-lm", "-no-pie", "-o", &file_name])
             .status()
             .map_err(|e| format!("Failed to generate binary from object file: {}", e))?;
 

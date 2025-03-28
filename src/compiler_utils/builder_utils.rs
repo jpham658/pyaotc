@@ -15,7 +15,7 @@ use crate::{
         typed_codegen::LLVMTypedCodegen,
     },
     compiler::Compiler,
-    type_inference::{ConcreteValue, NodeTypeDB, Type},
+    type_inference::{ConcreteValue, NodeTypeDB, Scheme, Type},
 };
 
 use super::get_predicate::get_int_predicate;
@@ -560,6 +560,7 @@ pub fn get_llvm_type_name<'ctx>(
  */
 pub fn get_llvm_type<'ctx>(compiler: &mut Compiler<'ctx>, typ: &Type) -> Option<AnyTypeEnum<'ctx>> {
     match typ {
+        Type::Scheme(Scheme { type_name, .. }) => get_llvm_type(compiler, &**type_name),
         Type::ConcreteType(ConcreteValue::Int) => {
             Some(compiler.context.i64_type().as_any_type_enum())
         }
