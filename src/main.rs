@@ -21,6 +21,8 @@ use type_inference::{
     bounded_type_vars_in_type_env, infer_stmts, NodeTypeDB, TypeEnv, TypeInferrer,
 };
 
+const MAX_INFERENCE_ROUNDS: i32 = 3;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     // if args.len() <= 1 {
@@ -60,9 +62,8 @@ fn main() {
 
             // if we still have bound types, use call collector to instantiate functions with
             // most common argument types
-            let max_inference_rounds = 3;
             let mut inference_round = 0;
-            while inference_round < max_inference_rounds
+            while inference_round < MAX_INFERENCE_ROUNDS
                 && !bounded_type_vars_in_type_env(&type_env).is_empty()
             {
                 let mut call_collector = FunctionCallCollector::new(&type_db);
@@ -72,7 +73,7 @@ fn main() {
                 infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
                 inference_round += 1;
             }
-            
+
             println!("{:?}", type_env);
             compiler.compile(&ast, &type_db, file_name);
             // compiler.compile_generically(&ast, file_name);

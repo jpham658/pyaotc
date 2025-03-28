@@ -343,7 +343,7 @@ impl TypeInferrer {
         let args = &func.args.args;
         let arg_types = args
             .iter()
-            .enumerate() // Get index of each argument
+            .enumerate() 
             .map(|(i, arg)| match &arg.as_arg().annotation {
                 None => {
                     if let Some(most_common_args) = &self.most_common_arg_types {

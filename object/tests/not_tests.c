@@ -1,4 +1,4 @@
-#include "../Not.c"
+#include "../ObjOps.h"
 #include <assert.h>
 
 void test_not_on_str()

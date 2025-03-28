@@ -63,6 +63,7 @@ impl Visitor for FunctionCallCollector {
                 }
             }
             Stmt::Assign(assign) => {
+                self.visit_expr(assign.targets[0].clone());
                 self.visit_expr(*assign.value.clone());
             }
             Stmt::Expr(expr_stmt) => {
@@ -126,6 +127,10 @@ impl Visitor for FunctionCallCollector {
     }
 
     fn visit_expr_call(&mut self, call: ExprCall) {
+        for arg in &call.args {
+            self.visit_expr(arg.clone());
+        }
+        
         if !call.func.is_name_expr() {
             return;
         }
@@ -134,9 +139,6 @@ impl Visitor for FunctionCallCollector {
         let func_name = func_as_name.id.as_str();
 
         if func_name.eq("print") || func_name.eq("len") || func_name.eq("range") {
-            for arg in &call.args {
-                self.visit_expr(arg.clone());
-            }
             return;
         }
 

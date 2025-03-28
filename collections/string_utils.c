@@ -42,7 +42,7 @@ char *str_mult(const char *str, word n)
     return result;
 }
 
-    const char **str_index(const char *str, word index)
+const char **str_index(const char *str, word index)
 {
     size_t len = str_len(str);
 

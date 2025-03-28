@@ -1,4 +1,5 @@
-#include "../Eq.c"
+#include "../ObjOps.h"
+#include <assert.h>
 
 void test_int_int_eq()
 {

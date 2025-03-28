@@ -300,10 +300,10 @@ pub fn handle_subscript_assignment<'ctx>(
     let subscript_value = match types.get(&subscript.value.range()) {
         Some(typ) => {
             let llvm_type = get_llvm_type(compiler, typ)
-                .expect("Only lists and dictionaries can be subscripted.");
+                .expect("Invalid type of subscript.");
             if !llvm_type.is_pointer_type() || llvm_type.into_pointer_type() != list_ptr_type {
                 return Err(BackendError {
-                    message: "Only lists and dictionaries can be subscripted.",
+                    message: "Subscripted type doesn't support item assignment.",
                 });
             }
             compiler

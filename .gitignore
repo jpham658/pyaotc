@@ -2,6 +2,7 @@
 /outputs
 test.c
 *.ll
+*.o
 test
 *.json
 /prereq_llvm
