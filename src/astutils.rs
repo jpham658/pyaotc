@@ -31,15 +31,17 @@ pub fn serialise_subscript(subscript: &ExprSubscript) -> String {
 pub fn get_iter_type_name(node: &Expr, types: &NodeTypeDB) -> String {
     // check if node is a name
     if let Some(name) = node.as_name_expr() {
-        let type_name = match types.get(&name.range) {
-            Some(typ) => match typ {
+        let typ = match types.get(&name.range) {
+            Some(Type::Scheme(scheme)) => *scheme.type_name.clone(),
+            Some(typ) => typ.clone(),
+            _ => return "".to_string(),
+        };
+        let type_name = match typ {
                 Type::Range => "range",
                 Type::List(..) => "list",
                 Type::Mapping(_, _) => "dict",
                 Type::ConcreteType(ConcreteValue::Str) => "str",
                 _ => "",
-            },
-            _ => "",
         };
 
         return type_name.to_string();

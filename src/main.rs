@@ -57,7 +57,7 @@ fn main() {
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
             // normal type inference
-            print_ast(&ast);
+            // print_ast(&ast);
             infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
 
             // if we still have bound types, use call collector to instantiate functions with

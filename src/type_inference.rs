@@ -343,7 +343,7 @@ impl TypeInferrer {
         let args = &func.args.args;
         let arg_types = args
             .iter()
-            .enumerate() 
+            .enumerate()
             .map(|(i, arg)| match &arg.as_arg().annotation {
                 None => {
                     if let Some(most_common_args) = &self.most_common_arg_types {
@@ -517,13 +517,13 @@ impl TypeInferrer {
 
                 let mut composite_subs = compose_subs(&sub_left, &sub_right);
                 let left_type = match left_type {
-                    Type::Scheme(Scheme { type_name, ..}) => *type_name,
-                    _ => left_type
+                    Type::Scheme(Scheme { type_name, .. }) => *type_name,
+                    _ => left_type,
                 };
 
                 let right_type = match right_type {
-                    Type::Scheme(Scheme { type_name, ..}) => *type_name,
-                    _ => right_type
+                    Type::Scheme(Scheme { type_name, .. }) => *type_name,
+                    _ => right_type,
                 };
 
                 let resultant_type = match (left_type, right_type) {
@@ -565,20 +565,15 @@ impl TypeInferrer {
             }
             Expr::Name(name) => {
                 let var = name.id.as_str();
-                match env.get(var) {
-                    Some(scheme) => {
-                        let typ = instantiate(scheme, self);
-                        let type_db_type = match &*scheme.type_name {
-                            Type::Scheme(s) => *s.type_name.clone(),
-                            _ => *scheme.type_name.clone(),
-                        };
-                        type_db.insert(name.range(), type_db_type);
-                        return Ok((Sub::new(), typ));
+                let typ = match env.get(var) {
+                    Some(scheme) => instantiate(scheme, self),
+                    None => {
+                        let typevar_name = self.fresh_var_generator.next();
+                        Type::TypeVar(TypeVar(typevar_name))
                     }
-                    None => Err(InferenceError {
-                        message: format!("Variable {} is unbound.", var),
-                    }),
-                }
+                };
+                type_db.insert(name.range(), typ.clone());
+                Ok((Sub::new(), typ))
             }
             Expr::Call(call) => self.infer_call(env, call, type_db),
             Expr::BoolOp(bop) => {

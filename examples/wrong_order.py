@@ -2,7 +2,7 @@
 #   status: error
 #   stderr:
 #       ...
-#       BackendError { message: "Function {func_name} not typed." }
+#       BackendError { message: "Variable {name} is not defined." }
 
 a = 3
 
