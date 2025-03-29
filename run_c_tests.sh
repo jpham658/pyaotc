@@ -4,7 +4,7 @@ SRC_DIRS=("collections" "object")
 TEST_DIRS=("collections/tests" "object/tests")
 
 CC=clang
-CFLAGS="-lgc" 
+CFLAGS="-lgc -lm" 
 
 echo "🔨 Compiling source files..."
 OBJ_FILES=()
