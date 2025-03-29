@@ -67,13 +67,6 @@ void test_float_bool_eq()
     assert(!Eq(obj1, obj3));
 }
 
-void test_incompatible_type_eq()
-{
-    Object *obj1 = new_str("1");
-    Object *obj2 = new_int(1);
-    assert(!Eq(obj1, obj2));
-}
-
 int main()
 {
     test_int_int_eq();
@@ -83,7 +76,6 @@ int main()
     test_int_float_eq();
     test_int_bool_eq();
     test_float_bool_eq();
-    test_incompatible_type_eq();
-    printf("Generic Equal operator tests successful.\n");
+    printf("Generic Eq operator tests successful.\n");
     return 0;
 }

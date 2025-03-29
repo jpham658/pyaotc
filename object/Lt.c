@@ -1,6 +1,5 @@
 #include "object.h"
 #include "../collections/string_utils.h"
-#include <string.h>
 
 bool Lt(Object *left, Object *right)
 {
@@ -62,10 +61,9 @@ bool Lt(Object *left, Object *right)
     {
         const char *left_as_str = object_as_str(left);
         const char *right_as_str = object_as_str(right);
-        return strcmp(left_as_str, right_as_str) < 0;
+        return str_len(left_as_str) < str_len(right_as_str);
     }
-    else
-    {
-        return false;
-    }
+    
+    fprintf(stderr, "Incompatible types for equality operator.\n");
+    exit(EXIT_FAILURE);
 }
