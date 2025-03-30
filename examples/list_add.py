@@ -15,5 +15,5 @@ def f(x):
       l.append(x[i] + i)
     return l
 
-print(f(range(0,4)))
 print(f([0,1,2,3]))
+print(f(range(0,4)))

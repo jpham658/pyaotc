@@ -10,7 +10,8 @@ use rustpython_parser::ast::{
 use crate::{
     astutils::serialise_subscript,
     type_inference::{
-        ConcreteValue, FreshVariableGenerator, NodeTypeDB, Scheme, Type, TypeEnv, TypeVar,
+        apply, unify, ConcreteValue, FreshVariableGenerator, NodeTypeDB, Scheme, Type, TypeEnv,
+        TypeVar,
     },
 };
 
@@ -199,6 +200,7 @@ fn infer_expr_with_rules(
 
             for arg in &call.args {
                 infer_expr_with_rules(rule_env, &arg, rule_inferrer, type_db);
+                println!("{:?}", rule_env);
             }
         }
         Expr::Subscript(subscript) => {
@@ -320,13 +322,30 @@ pub fn get_inferred_rule_types(rule_env: &mut RuleEnv) -> TypeEnv {
 }
 
 fn get_most_likely_type(heuristic: &Heuristic) -> Type {
-    let mut sorted_heuristics = heuristic.iter().collect::<Vec<(_, _)>>();
-    sorted_heuristics.sort_by(|(t1, v1), (t2, v2)| {
+    // Merge scores where types are unifiable
+    // e.g. List<v0> and List<Int> can refer to the same type
+    let mut unified_heuristic_types: Vec<(Type, f32)> = Vec::new();
+    for (typ, score) in heuristic.iter() {
+        let mut typ_is_unifiable = false;
+        for (unified_type, unified_score) in &mut unified_heuristic_types {
+            if let Ok(sub) = unify(&unified_type, typ) {
+                *unified_type = apply(&sub, &unified_type);
+                *unified_score += *score;
+                typ_is_unifiable = true;
+                break;
+            }
+        }
+        if !typ_is_unifiable {
+            unified_heuristic_types.push((typ.clone(), *score));
+        }
+    }
+
+    unified_heuristic_types.sort_by(|(t1, v1), (t2, v2)| {
         v2.partial_cmp(v1)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| type_order(t1).cmp(&type_order(t2)))
     });
-    sorted_heuristics[0].0.clone() // get type from tuple form of Heuristic (Type, f32)
+    unified_heuristic_types[0].0.clone() // get type from tuple form of Heuristic (Type, f32)
 }
 
 /**
@@ -479,7 +498,7 @@ impl RuleInferrer {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(typ.clone())), 2.0),
-            (Type::Range, 2.0),
+            (Type::Range, 1.0),
         ]);
         self.apply_rule(node, &rule, rule_env);
     }
@@ -494,7 +513,7 @@ impl RuleInferrer {
         let rule = Vec::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(typ.clone())), 2.0),
-            (Type::Range, 2.0),
+            (Type::Range, 1.0),
         ]);
         self.apply_rule(node, &rule, rule_env);
     }

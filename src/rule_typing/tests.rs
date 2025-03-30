@@ -200,7 +200,7 @@ mod infer_stmts_with_rules_tests {
                     Type::List(Box::new(Type::ConcreteType(ConcreteValue::Float))),
                     5.0,
                 ),
-                (Type::Range, 2.0),
+                (Type::Range, 1.0),
                 (Type::ConcreteType(ConcreteValue::Str), 2.0),
                 (
                     Type::Mapping(
@@ -346,7 +346,7 @@ mod infer_expr_with_rules_tests {
         let expected_heuristics = Heuristic::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(expected_type_var.clone())), 2.0),
-            (Type::Range, 2.0),
+            (Type::Range, 1.0),
         ]);
         let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
         assert_eq!(expected_rule_env, rule_env);
@@ -389,7 +389,7 @@ mod infer_expr_with_rules_tests {
         let expected_heuristics = Heuristic::from([
             (Type::ConcreteType(ConcreteValue::Str), 2.0),
             (Type::List(Box::new(expected_type_var.clone())), 2.0),
-            (Type::Range, 2.0),
+            (Type::Range, 1.0),
         ]);
         let expected_rule_env = RuleEnv::from([("x".to_string(), expected_heuristics)]);
         assert_eq!(expected_rule_env, rule_env);

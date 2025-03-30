@@ -72,6 +72,5 @@ bool Eq(Object *left, Object *right)
         return str_eq(left_as_str, right_as_str);
     }
     
-    fprintf(stderr, "Incompatible types for equality operator.\n");
-    exit(EXIT_FAILURE);
+    return false;
 }

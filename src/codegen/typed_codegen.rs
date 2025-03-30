@@ -163,7 +163,11 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                     .ptr_type(AddressSpace::default())
                     .fn_type(&llvm_arg_types, false)
             }
-            // TODO: Extend to handle Any cases in the case of ambiguous return types
+            Type::Any => {
+                return Err(BackendError {
+                    message: "Functions with more than one return type are not supported.",
+                });
+            }
             _ => {
                 return Err(BackendError {
                     message: "The compiler needs a bit more help to infer this function, please annotate the function with more information!",
@@ -261,8 +265,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 }
                 Type::ConcreteType(ConcreteValue::Str)
                 | Type::List(..)
-                | Type::Range
-                | Type::Any => {
+                | Type::Range => {
                     let _ = compiler
                         .builder
                         .build_return(Some(&ir.into_pointer_value()));

@@ -436,8 +436,6 @@ impl TypeInferrer {
                 .map(|t| apply(&subs, &t))
                 .collect();
 
-            println!("ret types {:?}", ret_types);
-
             let mut resultant_type = if ret_types.is_empty() {
                 Type::ConcreteType(ConcreteValue::None)
             } else {
