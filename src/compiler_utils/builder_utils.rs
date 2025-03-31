@@ -1,5 +1,5 @@
 use inkwell::{
-    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, PointerType},
+    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum},
     values::{
         AnyValue, AnyValueEnum, BasicMetadataValueEnum, FunctionValue, IntValue, PointerValue,
     },
@@ -49,7 +49,7 @@ pub fn build_print_obj_call<'ctx>(
     match print_obj_call {
         Ok(res) => Ok(res.as_any_value_enum()),
         Err(..) => Err(BackendError {
-            message: "Could not call print_obj.",
+            message: "Could not call print_obj.".to_string(),
         }),
     }
 }
@@ -161,7 +161,7 @@ pub fn create_object<'ctx>(
                 return create_object(compiler, ptr_val.as_any_value_enum());
             } else {
                 return Err(BackendError {
-                    message: "Given value cannot be converted to Object*.",
+                    message: "Given value cannot be converted to Object*.".to_string(),
                 });
             }
         }
@@ -193,13 +193,13 @@ pub fn handle_attr_fn_call<'ctx>(
     // only handles append
     if !attr.attr.as_str().eq("append") {
         return Err(BackendError {
-            message: "Invalid function call.",
+            message: format!("Invalid function call {}.", attr.attr.as_str()),
         });
     }
 
     if args.len() != 1 {
         return Err(BackendError {
-            message: "Invalid number of arguments given to append call.",
+            message: "Invalid number of arguments given to append call.".to_string(),
         });
     }
 
@@ -218,7 +218,7 @@ pub fn handle_attr_fn_call<'ctx>(
             .expect("Could not cast pointer to list type.")
     } else {
         return Err(BackendError {
-            message: "Can only call append on lists.",
+            message: "Can only call append on lists.".to_string(),
         });
     };
 
@@ -235,7 +235,7 @@ pub fn handle_attr_fn_call<'ctx>(
             .expect("Could not allocate memory to value."),
         _ => {
             return Err(BackendError {
-                message: "Invalid argument for append.",
+                message: "Invalid argument for append.".to_string(),
             })
         }
     }
@@ -275,7 +275,7 @@ pub fn handle_attr_fn_call<'ctx>(
     match append_call {
         Ok(res) => Ok(res.as_any_value_enum()),
         Err(..) => Err(BackendError {
-            message: "Could not append value to list.",
+            message: "Could not append value to list.".to_string(),
         }),
     }
 }
@@ -303,7 +303,7 @@ pub fn handle_subscript_assignment<'ctx>(
                 .expect("Invalid type of subscript.");
             if !llvm_type.is_pointer_type() || llvm_type.into_pointer_type() != list_ptr_type {
                 return Err(BackendError {
-                    message: "Subscripted type doesn't support item assignment.",
+                    message: "Subscripted type doesn't support item assignment.".to_string(),
                 });
             }
             compiler
@@ -317,7 +317,7 @@ pub fn handle_subscript_assignment<'ctx>(
         }
         _ => {
             return Err(BackendError {
-                message: "Only lists and dictionaries can be subscripted.",
+                message: "Only lists can be subscripted.".to_string(),
             })
         }
     };
@@ -326,7 +326,7 @@ pub fn handle_subscript_assignment<'ctx>(
 
     if !slice.is_int_value() {
         return Err(BackendError {
-            message: "Dictionaries are not implemented yet.",
+            message: "Dictionaries are not implemented yet.".to_string(),
         });
     }
 
@@ -334,7 +334,7 @@ pub fn handle_subscript_assignment<'ctx>(
         get_llvm_type_name(compiler, &subscript_value.as_any_value_enum());
     if subscript_value_type_string.is_empty() {
         return Err(BackendError {
-            message: "Invalid subscript value type.",
+            message: "Invalid subscript value type.".to_string(),
         });
     }
     let set_fn_name = format!("{subscript_value_type_string}_set");
@@ -351,7 +351,7 @@ pub fn handle_subscript_assignment<'ctx>(
             .expect("Could not allocate memory to value."),
         _ => {
             return Err(BackendError {
-                message: "Invalid RHS of assignment.",
+                message: "Invalid RHS of assignment.".to_string(),
             })
         }
     }
@@ -393,7 +393,7 @@ pub fn handle_subscript_assignment<'ctx>(
     match set_call {
         Ok(res) => Ok(res.as_any_value_enum()),
         Err(..) => Err(BackendError {
-            message: "Could not set subscript value.",
+            message: "Could not set subscript value.".to_string(),
         }),
     }
 }
@@ -462,7 +462,7 @@ pub fn handle_predefined_functions<'ctx>(
     }
 
     Err(BackendError {
-        message: "Function name is not predefined.",
+        message: format!("Function name {func_name} is not predefined."),
     })
 }
 
@@ -627,7 +627,7 @@ pub fn build_generic_len_call<'ctx>(
 ) -> IRGenResult<'ctx> {
     if args.len() != 1 {
         return Err(BackendError {
-            message: "len call takes only one argument.",
+            message: "len call takes only one argument.".to_string(),
         });
     }
     let object_len_fn = compiler
@@ -655,14 +655,14 @@ pub fn build_len_call<'ctx>(
 ) -> IRGenResult<'ctx> {
     if args.len() != 1 {
         return Err(BackendError {
-            message: "A single argument must be given to the len call.",
+            message: "A single argument must be given to the len call.".to_string(),
         });
     }
 
     let arg = args[0];
     if !arg.is_pointer_value() {
         return Err(BackendError {
-            message: "Argument to len call must be a list, string, range, or dictionary.",
+            message: "Argument to len call must be a list, string, or range.".to_string(),
         });
     }
     let list_ptr_type = compiler
@@ -686,7 +686,7 @@ pub fn build_len_call<'ctx>(
         "str"
     } else {
         return Err(BackendError {
-            message: "Argument to len call must be a list, string, range, or dictionary.",
+            message: "Argument to len call must be a list, string, or range.".to_string(),
         });
     };
 
@@ -718,13 +718,13 @@ pub fn build_generic_range_call<'ctx>(
 ) -> IRGenResult<'ctx> {
     if args.len() == 0 {
         return Err(BackendError {
-            message: "Too few arguments given to range call.",
+            message: "Too few arguments given to range call.".to_string(),
         });
     }
 
     if args.len() > 3 {
         return Err(BackendError {
-            message: "Too many arguments given to range call.",
+            message: "Too many arguments given to range call.".to_string(),
         });
     }
 
@@ -799,7 +799,7 @@ pub fn build_generic_range_call<'ctx>(
     match build_range_obj_call {
         Ok(ir) => Ok(ir.as_any_value_enum()),
         Err(..) => Err(BackendError {
-            message: "Could not build call.",
+            message: "Could not build range object.".to_string(),
         }),
     }
 }
@@ -813,20 +813,20 @@ pub fn build_range_call<'ctx>(
 ) -> IRGenResult<'ctx> {
     if args.len() == 0 {
         return Err(BackendError {
-            message: "Too few arguments given to range call.",
+            message: "Too few arguments given to range call.".to_string(),
         });
     }
 
     if args.len() > 3 {
         return Err(BackendError {
-            message: "Too many arguments given to range call.",
+            message: "Too many arguments given to range call.".to_string(),
         });
     }
 
     for arg in &args {
         if !arg.is_int_value() {
             return Err(BackendError {
-                message: "Arguments to range are incorrect.",
+                message: "Arguments to range are incorrect.".to_string(),
             });
         }
     }
@@ -881,7 +881,7 @@ pub fn build_range_call<'ctx>(
     {
         Ok(ir) => Ok(ir.as_any_value_enum()),
         Err(..) => Err(BackendError {
-            message: "Could not build call.",
+            message: "Could not build range.".to_string(),
         }),
     }
 }
@@ -901,7 +901,7 @@ pub fn build_generic_for_loop_body<'ctx>(
         name.id.as_str()
     } else {
         return Err(BackendError {
-            message: "Target in for loop is not a name.",
+            message: "Target in for loop is not a name.".to_string(),
         });
     };
 
@@ -1042,7 +1042,7 @@ pub fn build_typed_for_loop_body<'ctx>(
         name.id.as_str()
     } else {
         return Err(BackendError {
-            message: "Target in for loop is not a name.",
+            message: "Target in for loop is not a name.".to_string(),
         });
     };
 
@@ -1084,11 +1084,10 @@ pub fn build_typed_for_loop_body<'ctx>(
         any_type_to_basic_type(type_as_any_enum).expect("Invalid target type.")
     } else {
         return Err(BackendError {
-            message: "Target type is not defined.",
+            message: "Target type is not defined.".to_string(),
         });
     };
 
-    // TODO: Add generic version of target ptr by loading the value and boxing it with create_object()
     let target =
         build_iter_increment(compiler, iter_ptr, next_func, target_type)?.into_pointer_value();
     let is_null = compiler
@@ -1149,7 +1148,7 @@ fn initialise_global_variable<'ctx>(
         AnyTypeEnum::StructType(s) => s.as_basic_type_enum(),
         _ => {
             return Err(BackendError {
-                message: "Unsupported r-value type.",
+                message: "Unsupported r-value type.".to_string(),
             })
         }
     };
@@ -1170,7 +1169,7 @@ fn initialise_global_variable<'ctx>(
         }
         _ => {
             return Err(BackendError {
-                message: "Unsupported r-value type.",
+                message: "Unsupported r-value type.".to_string(),
             })
         }
     }
@@ -1192,7 +1191,7 @@ pub fn handle_global_assignment<'ctx>(
 ) -> IRGenResult<'ctx> {
     if typed_value.is_none() && generic_value.is_none() {
         return Err(BackendError {
-            message: "Target must have at least one typed or generic value.",
+            message: "Target must have at least one typed or generic value.".to_string(),
         });
     }
 
@@ -1260,7 +1259,7 @@ pub fn allocate_variable<'ctx>(
             .build_alloca(typed_value.into_pointer_value().get_type(), target_name),
         _ => {
             return Err(BackendError {
-                message: "Unsupported type for allocation",
+                message: "Unsupported type for allocation".to_string(),
             })
         }
     };
@@ -1268,7 +1267,7 @@ pub fn allocate_variable<'ctx>(
     match target_ptr {
         Ok(res) => Ok(res.as_any_value_enum()),
         Err(..) => Err(BackendError {
-            message: "Could not allocate pointer.",
+            message: "Could not allocate pointer.".to_string(),
         }),
     }
 }
@@ -1296,7 +1295,7 @@ pub fn store_value<'ctx>(
             .build_store(*target_ptr, typed_value.into_struct_value()),
         _ => {
             return Err(BackendError {
-                message: "Unsupported assignment type.",
+                message: "Unsupported assignment type.".to_string(),
             })
         }
     };
@@ -1304,7 +1303,7 @@ pub fn store_value<'ctx>(
     match store {
         Ok(res) => Ok(res.as_any_value_enum()),
         Err(..) => Err(BackendError {
-            message: "Unsupported assignment type.",
+            message: "Unsupported assignment type.".to_string(),
         }),
     }
 }

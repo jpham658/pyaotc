@@ -1,22 +1,22 @@
 use std::collections::HashMap;
 
-use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum};
 use inkwell::AddressSpace;
 use malachite_bigint;
 use rustpython_ast::ExprSubscript;
 use rustpython_parser::ast::{
     Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext,
-    ExprIfExp, ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFor,
-    StmtFunctionDef, StmtIf, StmtWhile,
+    ExprList, ExprName, ExprUnaryOp, Stmt, StmtAssign, StmtExpr, StmtFor, StmtFunctionDef, StmtIf,
+    StmtWhile,
 };
 
 use crate::astutils::GetReturnStmts;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, any_type_to_basic_type, build_generic_comp_op, build_generic_for_loop_body,
-    build_generic_len_call, build_generic_range_call, build_print_obj_call, create_object,
-    get_list_element_enum, handle_global_assignment, store_value,
+    allocate_variable, build_generic_comp_op, build_generic_for_loop_body, build_generic_len_call,
+    build_generic_range_call, build_print_obj_call, create_object, get_list_element_enum,
+    handle_global_assignment, store_value,
 };
 use crate::compiler_utils::to_any_type::ToAnyType;
 
@@ -80,11 +80,15 @@ impl LLVMGenericCodegen for Stmt {
                         .expect("Could not build void return.");
                     Ok(ret_none.as_any_value_enum())
                 }
-                Some(expr) => expr.generic_codegen(compiler),
+                Some(expr) => {
+                    expr.generic_codegen(compiler) // refactor to do the return here...
+                }
             },
             Stmt::FunctionDef(funcdef) => funcdef.generic_codegen(compiler),
             _ => Err(BackendError {
-                message: "Codegen for statement type not implemented yet...",
+                message:
+                    "This program uses a statement type that is not supported by the compiler."
+                        .to_string(),
             }),
         }
     }
@@ -179,7 +183,7 @@ impl LLVMGenericCodegen for StmtFunctionDef {
             }
             if ret_stmt_declared {
                 return Err(BackendError {
-                    message: "Return statement cannot be declared twice in function body.",
+                    message: "Return statement defined more than once in this scope.".to_string(),
                 });
             }
             ret_stmt_declared = true;
@@ -239,7 +243,7 @@ impl LLVMGenericCodegen for StmtAssign {
             Expr::Name(exprname) => exprname.id.as_str(),
             _ => {
                 return Err(BackendError {
-                    message: "Left of an assignment must be a variable.",
+                    message: "Left of an assignment must be a variable.".to_string(),
                 })
             }
         };
@@ -280,7 +284,7 @@ impl LLVMGenericCodegen for StmtFor {
 
         if iter_type == bool_type.as_any_type_enum() {
             return Err(BackendError {
-                message: "Invalid iterator type given.",
+                message: "Iterator cannot be a boolean.".to_string(),
             });
         }
 
@@ -554,11 +558,10 @@ impl LLVMGenericCodegen for Expr {
             Expr::BoolOp(boolop) => boolop.generic_codegen(compiler),
             Expr::Compare(cmp) => cmp.generic_codegen(compiler),
             Expr::UnaryOp(unop) => unop.generic_codegen(compiler),
-            Expr::IfExp(ifexp) => ifexp.generic_codegen(compiler),
             Expr::List(list) => list.generic_codegen(compiler),
             Expr::Subscript(subscript) => subscript.generic_codegen(compiler),
             _ => Err(BackendError {
-                message: "Not implemented yet...",
+                message: "Expression type not implemented yet...".to_string(),
             }),
         }
     }
@@ -599,7 +602,7 @@ impl LLVMGenericCodegen for ExprList {
                 Some(type_enum) => type_enum,
                 None => {
                     return Err(BackendError {
-                        message: "List element type is not supported.",
+                        message: format!("List element type {:?} is not supported.", llvm_elt_type),
                     })
                 }
             }
@@ -649,7 +652,7 @@ impl LLVMGenericCodegen for ExprList {
             Some(param) => param,
             None => {
                 return Err(BackendError {
-                    message: "Could not convert list to param.",
+                    message: "Could not convert list to param.".to_string(),
                 })
             }
         };
@@ -685,7 +688,7 @@ impl LLVMGenericCodegen for ExprList {
                     Some(param) => param,
                     None => {
                         return Err(BackendError {
-                            message: "Could not convert list element pointer to param.",
+                            message: "Could not convert list element pointer to param.".to_string(),
                         })
                     }
                 };
@@ -696,7 +699,7 @@ impl LLVMGenericCodegen for ExprList {
                     .build_call(list_append_fn, &[list_as_param, elt_ptr_as_param], "")
             {
                 return Err(BackendError {
-                    message: "Could not append element to list.",
+                    message: "Could not append element to list.".to_string(),
                 });
             }
         }
@@ -714,14 +717,6 @@ impl LLVMGenericCodegen for ExprList {
     }
 }
 
-impl LLVMGenericCodegen for ExprIfExp {
-    fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
-        Err(BackendError {
-            message: "Not implemented yet...",
-        })
-    }
-}
-
 impl LLVMGenericCodegen for ExprCompare {
     fn generic_codegen<'ctx: 'ir, 'ir>(&self, compiler: &mut Compiler<'ctx>) -> IRGenResult<'ir> {
         let mut left = self.left.generic_codegen(compiler)?;
@@ -732,13 +727,10 @@ impl LLVMGenericCodegen for ExprCompare {
             .collect::<Result<Vec<_>, _>>()?;
 
         let ops = &self.ops;
-        let obj_ptr_type = compiler.object_type.ptr_type(AddressSpace::default());
-
         let mut conditions = Vec::new();
 
         for (op, comp) in ops.iter().zip(comparators.iter()) {
             let g_cmpop_fn_name = format!("{:?}", op);
-
             let llvm_comp = build_generic_comp_op(compiler, &g_cmpop_fn_name, &left, comp)?;
             conditions.push(llvm_comp.into_int_value());
 
@@ -859,11 +851,13 @@ impl LLVMGenericCodegen for ExprCall {
             })
             .collect();
 
-        println!("{:?}", args);
         if let Some(attr) = self.func.as_attribute_expr() {
             if self.args.len() != 1 {
                 return Err(BackendError {
-                    message: "Incorrect number of arguments given to append call.",
+                    message: format!(
+                        "Incorrect number of arguments given to function {:?}.",
+                        attr.attr.as_str()
+                    ),
                 });
             }
             let value_obj = attr.value.generic_codegen(compiler)?;
@@ -912,7 +906,10 @@ impl LLVMGenericCodegen for ExprCall {
         let arg_count = function.count_params();
         if arg_count != self.args.len() as u32 {
             return Err(BackendError {
-                message: "Incorrect number of arguments provided.",
+                message: format!(
+                    "Incorrect number of arguments for function {:?}.",
+                    func_name
+                ),
             });
         }
 
@@ -945,7 +942,7 @@ impl LLVMGenericCodegen for ExprName {
                 match sym_table_entry {
                     Some((_, ptr)) => {
                         if ptr.is_none() {
-                            return Err(BackendError { message: "Variable is defined in this scope but doesn't have a corresponding pointer..." });
+                            return Err(BackendError { message: "Variable is defined in this scope but doesn't have a corresponding pointer...?".to_string() });
                         }
                         let load = compiler
                             .builder
@@ -953,16 +950,13 @@ impl LLVMGenericCodegen for ExprName {
                             .expect("Could not load Object pointer.");
                         return Ok(load.as_any_value_enum());
                     }
-                    _ => {
-                        println!("could not find variable {name}");
-                        Err(BackendError {
-                            message: "Variable {name} is not defined.",
-                        })
-                    }
+                    _ => Err(BackendError {
+                        message: format!("Variable {name} is not defined."),
+                    }),
                 }
             }
             ExprContext::Del => Err(BackendError {
-                message: "Deleting a variable is not implemented yet.",
+                message: "Deleting a variable is not implemented yet.".to_string(),
             }),
         }
     }
@@ -1003,7 +997,7 @@ impl LLVMGenericCodegen for ExprConstant {
             }
             Constant::Str(str) => Ok(str.to_any_type(compiler).as_any_value_enum()),
             _ => Err(BackendError {
-                message: "Not implemented yet...",
+                message: format!("Constant type {:?} not implemented yet...", self.value),
             }),
         }
     }

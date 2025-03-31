@@ -200,7 +200,6 @@ fn infer_expr_with_rules(
 
             for arg in &call.args {
                 infer_expr_with_rules(rule_env, &arg, rule_inferrer, type_db);
-                println!("{:?}", rule_env);
             }
         }
         Expr::Subscript(subscript) => {

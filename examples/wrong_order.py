@@ -2,7 +2,7 @@
 #   status: error
 #   stderr:
 #       ...
-#       BackendError { message: "Variable {name} is not defined." }
+#       BackendError { message: "Variable b is not defined." }
 
 a = 3
 

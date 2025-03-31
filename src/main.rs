@@ -8,7 +8,6 @@ mod compiler_utils;
 mod rule_typing;
 mod type_inference;
 
-use astutils::print_ast;
 use call_collector::FunctionCallCollector;
 use compiler::Compiler;
 use inkwell::context::Context;
@@ -25,9 +24,9 @@ const MAX_INFERENCE_ROUNDS: i32 = 3;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    // if args.len() <= 1 {
-    //     panic!("Please enter a Python file to compile.");
-    // }
+    if args.len() <= 1 {
+        panic!("Please enter a Python file to compile.");
+    }
 
     let python_source_path = if args.len() > 1 { &args[1] } else { "test.py" };
     let python_source = fs::read_to_string(python_source_path)
@@ -57,7 +56,6 @@ fn main() {
     match ast::Suite::parse(&python_source, &python_source_path) {
         Ok(ast) => {
             // normal type inference
-            // print_ast(&ast);
             infer_stmts(&mut type_inferrer, &mut type_env, &ast, &mut type_db);
 
             // if we still have bound types, use call collector to instantiate functions with
@@ -74,7 +72,6 @@ fn main() {
                 inference_round += 1;
             }
 
-            println!("{:?}", type_env);
             compiler.compile(&ast, &type_db, file_name);
             // compiler.compile_generically(&ast, file_name);
         }

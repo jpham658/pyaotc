@@ -13,7 +13,7 @@ use crate::codegen::error::{BackendError, IRGenResult};
 use crate::codegen::generic_codegen::LLVMGenericCodegen;
 use crate::codegen::scope::ScopeManager;
 use crate::codegen::typed_codegen::LLVMTypedCodegen;
-use crate::type_inference::{NodeTypeDB, Type, TypeEnv};
+use crate::type_inference::{NodeTypeDB, Type};
 
 #[derive(Debug)]
 pub struct Compiler<'ctx> {
@@ -155,7 +155,7 @@ impl<'ctx> Compiler<'ctx> {
 
         match self.module.print_to_file(output) {
             Ok(..) => println!(".ll file found at {}", output.display()),
-            Err(e) => {
+            Err(..) => {
                 let _ = fs::create_dir_all(&output)
                     .map_err(|e| format!("Failed to create temp directory: {}", e));
             }
@@ -501,7 +501,7 @@ impl<'ctx> Compiler<'ctx> {
         {
             Ok(call) => Ok(call.as_any_value_enum()),
             Err(..) => Err(BackendError {
-                message: "Could not build GC_malloc.",
+                message: "Could not build GC_malloc.".to_string(),
             }),
         }
     }

@@ -547,11 +547,6 @@ impl TypeInferrer {
                         composite_subs = compose_subs(&composite_subs, &unifier);
                         typ1
                     }
-                    _ => {
-                        return Err(InferenceError {
-                            message: "Expression type not implemented yet.".to_string(),
-                        })
-                    }
                 };
 
                 Ok((composite_subs, resultant_type))
@@ -801,7 +796,7 @@ impl TypeInferrer {
                         var = name.id.as_str();
                         new_env = remove(&var, env);
                     }
-                    Expr::Subscript(subscript) => {
+                    Expr::Subscript(..) => {
                         let (subscript_sub, subscript_type) =
                             self.infer_expression(env, target, type_db)?;
 
@@ -1321,33 +1316,6 @@ pub fn unify(t1: &Type, t2: &Type) -> Result<Sub, InferenceError> {
                 });
             }
             Ok(Sub::new())
-        }
-        (Type::Mapping(key_type, val_type), Type::List(elt_type))
-        | (Type::List(elt_type), Type::Mapping(key_type, val_type)) => {
-            if let Type::ConcreteType(ConcreteValue::Int) = **key_type {
-                unify(&val_type, &elt_type)
-            } else {
-                let err_msg = format!("Types {:?} and {:?} do not unify.", t1, t2);
-                Err(InferenceError { message: err_msg })
-            }
-        }
-        (Type::Mapping(key_type, val_type), Type::Range)
-        | (Type::Range, Type::Mapping(key_type, val_type)) => {
-            if let Type::ConcreteType(ConcreteValue::Int) = **key_type {
-                unify(&val_type, &Type::ConcreteType(ConcreteValue::Int))
-            } else {
-                let err_msg = format!("Types {:?} and {:?} do not unify.", t1, t2);
-                Err(InferenceError { message: err_msg })
-            }
-        }
-        (Type::Mapping(key_type, val_type), Type::ConcreteType(ConcreteValue::Str))
-        | (Type::ConcreteType(ConcreteValue::Str), Type::Mapping(key_type, val_type)) => {
-            if let Type::ConcreteType(ConcreteValue::Int) = **key_type {
-                unify(&val_type, &Type::ConcreteType(ConcreteValue::Str))
-            } else {
-                let err_msg = format!("Types {:?} and {:?} do not unify.", t1, t2);
-                Err(InferenceError { message: err_msg })
-            }
         }
         (Type::Mapping(k1, v1), Type::Mapping(k2, v2)) => {
             let key_unifier = unify(k1, k2)?;

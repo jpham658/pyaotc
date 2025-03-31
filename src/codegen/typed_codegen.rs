@@ -1,4 +1,4 @@
-use inkwell::types::{AnyType, AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicType};
+use inkwell::types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FloatValue, IntValue};
 use inkwell::AddressSpace;
 use malachite_bigint;
@@ -14,14 +14,14 @@ use std::collections::HashMap;
 use crate::astutils::get_iter_type_name;
 use crate::compiler::Compiler;
 use crate::compiler_utils::builder_utils::{
-    allocate_variable, any_type_to_basic_type, build_generic_comp_op, build_range_call,
-    build_typed_for_loop_body, create_object, get_list_element_enum, get_llvm_type,
-    get_llvm_type_name, handle_attr_fn_call, handle_global_assignment, handle_predefined_functions,
-    handle_str_compare, handle_subscript_assignment, is_iterable, store_value,
+    allocate_variable, any_type_to_basic_type, build_generic_comp_op, build_typed_for_loop_body,
+    create_object, get_list_element_enum, get_llvm_type, get_llvm_type_name, handle_attr_fn_call,
+    handle_global_assignment, handle_predefined_functions, handle_str_compare,
+    handle_subscript_assignment, is_iterable, store_value,
 };
 use crate::compiler_utils::get_predicate::{get_float_predicate, get_int_predicate};
 use crate::compiler_utils::print_fn::print_fn;
-use crate::type_inference::{extract_func_types, ConcreteValue, NodeTypeDB, Type, TypeEnv};
+use crate::type_inference::{extract_func_types, ConcreteValue, NodeTypeDB, Type};
 
 use super::error::{BackendError, IRGenResult};
 use super::generic_codegen::LLVMGenericCodegen;
@@ -58,7 +58,9 @@ impl LLVMTypedCodegen for Stmt {
             },
             Stmt::FunctionDef(funcdef) => funcdef.typed_codegen(compiler, types),
             _ => Err(BackendError {
-                message: "Stmt type not implemented yet...",
+                message:
+                    "This program uses a statement type that is not supported by the compiler."
+                        .to_string(),
             }),
         }
     }
@@ -81,7 +83,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             Some(typ) => func_type = typ.clone(),
             None => {
                 return Err(BackendError {
-                    message: "Function {func_name} not typed.",
+                    message: format!("Function {func_name} not typed."),
                 })
             }
         }
@@ -165,12 +167,13 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             }
             Type::Any => {
                 return Err(BackendError {
-                    message: "Functions with more than one return type are not supported.",
+                    message: "Functions with more than one return type are not supported."
+                        .to_string(),
                 });
             }
             _ => {
                 return Err(BackendError {
-                    message: "The compiler needs a bit more help to infer this function, please annotate the function with more information!",
+                    message: "The compiler needs a bit more help to infer this function, please annotate the function with more information!".to_string(),
                 });
             }
         };
@@ -248,7 +251,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
             }
             if ret_stmt_declared {
                 return Err(BackendError {
-                    message: "Return statement cannot be declared twice in function body.",
+                    message: "Return statement defined more than once in this scope.".to_string(),
                 });
             }
             ret_stmt_declared = true;
@@ -263,16 +266,14 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 Type::ConcreteType(ConcreteValue::None) => {
                     continue;
                 }
-                Type::ConcreteType(ConcreteValue::Str)
-                | Type::List(..)
-                | Type::Range => {
+                Type::ConcreteType(ConcreteValue::Str) | Type::List(..) | Type::Range => {
                     let _ = compiler
                         .builder
                         .build_return(Some(&ir.into_pointer_value()));
                 }
                 _ => {
                     return Err(BackendError {
-                        message: "Not a valid function return type.",
+                        message: format!("Invalid return type {:?}.", return_type),
                     })
                 }
             };
@@ -314,7 +315,7 @@ impl LLVMTypedCodegen for StmtAssign {
             Expr::Name(exprname) => exprname.id.to_string(),
             _ => {
                 return Err(BackendError {
-                    message: "Left of an assignment must be a variable or a subscript.",
+                    message: "Left of an assignment must be a variable.".to_string(),
                 })
             }
         };
@@ -335,8 +336,6 @@ impl LLVMTypedCodegen for StmtAssign {
             None
         };
 
-        // TODO: Refactor to return both typed and generic target ptr, so we can add
-        // both to sym table.
         if compiler.sym_table.is_global_scope() {
             handle_global_assignment(
                 compiler,
@@ -407,7 +406,7 @@ impl LLVMTypedCodegen for StmtFor {
         let iter = self.iter.typed_codegen(compiler, types)?;
         if !is_iterable(compiler, &iter) {
             return Err(BackendError {
-                message: "Invalid iterator type.",
+                message: format!("Invalid iterator type. {:?}", iter),
             });
         }
 
@@ -415,7 +414,7 @@ impl LLVMTypedCodegen for StmtFor {
 
         if iter_type.is_empty() {
             return Err(BackendError {
-                message: "Iterator type not implemented yet.",
+                message: format!("Iterator type {:?} not implemented yet.", iter),
             });
         }
 
@@ -691,7 +690,7 @@ impl LLVMTypedCodegen for Expr {
             Expr::List(list) => list.typed_codegen(compiler, types),
             Expr::Subscript(subscript) => subscript.typed_codegen(compiler, types),
             _ => Err(BackendError {
-                message: "Expression not implemented yet...",
+                message: "Expression not implemented yet...".to_string(),
             }),
         }
     }
@@ -706,10 +705,9 @@ impl LLVMTypedCodegen for ExprSubscript {
         let value = self.value.typed_codegen(compiler, types)?;
         let slice = self.slice.typed_codegen(compiler, types)?;
 
-        // TODO: Handle mapping key getter
         if !slice.is_int_value() {
             return Err(BackendError {
-                message: "Non-integer slices are not implemented yet.",
+                message: "Non-integer slices are not implemented yet.".to_string(),
             });
         }
 
@@ -717,7 +715,7 @@ impl LLVMTypedCodegen for ExprSubscript {
 
         if value_type_string.is_empty() {
             return Err(BackendError {
-                message: "Invalid value type.",
+                message: "Invalid value type.".to_string(),
             });
         }
 
@@ -756,6 +754,7 @@ impl LLVMTypedCodegen for ExprSubscript {
         }
 
         if let Some(element_type) = types.get(&self.range()) {
+            println!("{:?}", element_type);
             let llvm_element_type =
                 get_llvm_type(compiler, &element_type).expect("Invalid element type.");
             let llvm_element_type =
@@ -779,7 +778,7 @@ impl LLVMTypedCodegen for ExprSubscript {
         }
 
         Err(BackendError {
-            message: "Indexing values for anything other than a string, list, or range is not yet implemented.",
+            message: "Indexing values for anything other than a string, list, or range is not yet implemented.".to_string(),
         })
     }
 }
@@ -794,7 +793,7 @@ impl LLVMTypedCodegen for ExprList {
             Some(Type::List(elt_typ)) => elt_typ,
             _ => {
                 return Err(BackendError {
-                    message: "Type of list is not declared properly.",
+                    message: "Type of list is not declared properly.".to_string(),
                 })
             }
         };
@@ -804,7 +803,7 @@ impl LLVMTypedCodegen for ExprList {
             Some(size) => size,
             None => {
                 return Err(BackendError {
-                    message: "List element type is invalid...",
+                    message: "List element type is invalid...".to_string(),
                 })
             }
         }
@@ -813,7 +812,7 @@ impl LLVMTypedCodegen for ExprList {
             Some(type_enum) => type_enum,
             None => {
                 return Err(BackendError {
-                    message: "List element type is not supported.",
+                    message: "List element type is not supported.".to_string(),
                 })
             }
         }
@@ -857,7 +856,7 @@ impl LLVMTypedCodegen for ExprList {
             Some(param) => param,
             None => {
                 return Err(BackendError {
-                    message: "Could not convert list to param.",
+                    message: "Could not convert list to param.".to_string(),
                 })
             }
         };
@@ -895,7 +894,7 @@ impl LLVMTypedCodegen for ExprList {
                     Some(param) => param,
                     None => {
                         return Err(BackendError {
-                            message: "Could not convert list element pointer to param.",
+                            message: "Could not convert list element pointer to param.".to_string(),
                         })
                     }
                 };
@@ -906,7 +905,7 @@ impl LLVMTypedCodegen for ExprList {
                     .build_call(list_append_fn, &[list_as_param, elt_ptr_as_param], "")
             {
                 return Err(BackendError {
-                    message: "Could not append element to list.",
+                    message: "Could not append element to list.".to_string(),
                 });
             }
         }
@@ -1015,7 +1014,7 @@ impl LLVMTypedCodegen for ExprCompare {
                 )
             } else {
                 return Err(BackendError {
-                    message: "Comparison not implemented for sequences and sets yet.",
+                    message: "Comparison not implemented for sequences and sets yet.".to_string(),
                 });
             };
             conditions.push(llvm_comp);
@@ -1055,12 +1054,11 @@ impl LLVMTypedCodegen for ExprUnaryOp {
 
         match (self.op, operand) {
             (UnaryOp::Not, AnyValueEnum::IntValue(i)) => {
-                // TODO: Extend for sequence, set, and string types...
                 if i.get_type() == compiler.context.bool_type() {
                     match compiler.builder.build_xor(truth_val, i, "not") {
                         Ok(res) => Ok(res.as_any_value_enum()),
                         Err(..) => Err(BackendError {
-                            message: "Could not perform not operation.",
+                            message: "Could not perform not operation.".to_string(),
                         }),
                     }
                 } else {
@@ -1073,7 +1071,7 @@ impl LLVMTypedCodegen for ExprUnaryOp {
                     ) {
                         Ok(res) => Ok(res.as_any_value_enum()),
                         Err(..) => Err(BackendError {
-                            message: "Could not perform not operation.",
+                            message: "Could not perform not operation.".to_string(),
                         }),
                     }
                 }
@@ -1132,7 +1130,7 @@ impl LLVMTypedCodegen for ExprUnaryOp {
             (UnaryOp::UAdd, AnyValueEnum::IntValue(i)) => Ok(i.as_any_value_enum()),
             (UnaryOp::UAdd, AnyValueEnum::FloatValue(f)) => Ok(f.as_any_value_enum()),
             _ => Err(BackendError {
-                message: "Invalid operand for given unary op.",
+                message: "Invalid operand for given unary op.".to_string(),
             }),
         }
     }
@@ -1153,7 +1151,7 @@ impl LLVMTypedCodegen for ExprBoolOp {
 
         if values.len() < 2 {
             return Err(BackendError {
-                message: "BoolOp must have at least 2 operands.",
+                message: "BoolOp must have at least 2 operands.".to_string(),
             });
         }
 
@@ -1237,7 +1235,7 @@ impl LLVMTypedCodegen for ExprCall {
 
         if !func_name.eq("print") && arg_count != self.args.len() as u32 {
             return Err(BackendError {
-                message: "Incorrect number of arguments provided.",
+                message: format!("Incorrect number of arguments provided to function {func_name}."),
             });
         }
 
@@ -1256,7 +1254,7 @@ impl LLVMTypedCodegen for ExprCall {
         let fn_arg_types = match compiler.func_types.borrow().get(func_name) {
             None => {
                 return Err(BackendError {
-                    message: "Function is not defined.",
+                    message: format!("Function {func_name} is not defined."),
                 })
             }
             Some(typ) => {
@@ -1266,7 +1264,7 @@ impl LLVMTypedCodegen for ExprCall {
                     fn_types
                 } else {
                     return Err(BackendError {
-                        message: "Function call mapped to incorrect type.",
+                        message: format!("Function call {func_name} mapped to incorrect type."),
                     });
                 }
             }
@@ -1321,7 +1319,7 @@ impl LLVMTypedCodegen for ExprName {
                     Some((typed_ptr, _)) => {
                         if typed_ptr.is_none() {
                             return Err(
-                                BackendError { message: "Variable is defined in this scope but doesn't have a corresponding pointer..." }
+                                BackendError { message: "Variable is defined in this scope but doesn't have a corresponding pointer...".to_string() }
                             );
                         }
                         let load = compiler
@@ -1331,12 +1329,12 @@ impl LLVMTypedCodegen for ExprName {
                         Ok(load.as_any_value_enum())
                     }
                     _ => Err(BackendError {
-                        message: "Variable {name} is not defined.",
+                        message: format!("Variable {name} is not defined."),
                     }),
                 }
             }
             ExprContext::Del => Err(BackendError {
-                message: "Deleting a variable is not implemented yet.",
+                message: "Deleting a variable is not implemented yet.".to_string(),
             }),
         }
     }
@@ -1390,7 +1388,7 @@ impl LLVMTypedCodegen for ExprConstant {
                 Ok(ptr.as_any_value_enum())
             }
             _ => Err(BackendError {
-                message: "Constant type not implemented yet...",
+                message: format!("Constant type {:?} not implemented yet...", self.value),
             }),
         }
     }
@@ -1415,13 +1413,13 @@ impl LLVMTypedCodegen for ExprBinOp {
 
         if !left.is_float_value() && !left.is_int_value() && !left.is_pointer_value() {
             return Err(BackendError {
-                message: "Invalid left operand for binary operator",
+                message: format!("Invalid left operand {:?} for binary operator", left),
             });
         }
 
         if !right.is_float_value() && !right.is_int_value() && !right.is_pointer_value() {
             return Err(BackendError {
-                message: "Invalid right operand for binary operator.",
+                message: format!("Invalid right operand {:?} for binary operator.", right),
             });
         }
 
@@ -1481,7 +1479,7 @@ impl LLVMTypedCodegen for ExprBinOp {
                         Some(res) => res,
                         _ => {
                             return Err(BackendError {
-                                message: "Invalid operand types for addition.",
+                                message: "Invalid operand types for addition.".to_string(),
                             });
                         }
                     }
@@ -1558,7 +1556,7 @@ impl LLVMTypedCodegen for ExprBinOp {
                         Some(res) => res,
                         _ => {
                             return Err(BackendError {
-                                message: "Invalid operand types for multiplication.",
+                                message: "Invalid operand types for multiplication.".to_string(),
                             });
                         }
                     }
@@ -1679,17 +1677,15 @@ impl LLVMTypedCodegen for ExprBinOp {
                         None => {
                             let f64_type = compiler.context.f64_type();
                             let floor_fn_type = f64_type.fn_type(&[f64_type.into()], false);
-                            compiler.module.add_function("llvm.floor.f64", floor_fn_type, None)
+                            compiler
+                                .module
+                                .add_function("llvm.floor.f64", floor_fn_type, None)
                         }
                     };
 
                     let floored_result = compiler
                         .builder
-                        .build_call(
-                            floor_fn,
-                            &[division_result.into()],
-                            "floored_fdiv",
-                        )
+                        .build_call(floor_fn, &[division_result.into()], "floored_fdiv")
                         .expect("Could not floor float division")
                         .as_any_value_enum();
 
@@ -1698,7 +1694,7 @@ impl LLVMTypedCodegen for ExprBinOp {
             }
             _ => {
                 return Err(BackendError {
-                    message: "Unsupported operator",
+                    message: format!("Unsupported operator {:?}", self.op),
                 })
             }
         };

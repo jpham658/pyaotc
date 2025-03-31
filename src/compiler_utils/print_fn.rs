@@ -99,7 +99,7 @@ pub fn print_fn<'a>(compiler: &Compiler<'a>, args: &[AnyValueEnum<'a>]) -> IRGen
             _ => {
                 println!("{:?}", arg);
                 return Err(BackendError {
-                    message: "Unsupported argument type for print",
+                    message: "Unsupported argument type for print".to_string(),
                 });
             }
         }
@@ -140,7 +140,7 @@ fn print_space<'a>(compiler: &Compiler<'a>) -> IRGenResult<'a> {
     match call {
         Ok(res) => Ok(res.as_any_value_enum()),
         Err(..) => Err(BackendError {
-            message: "Could not print space.",
+            message: "Could not print space.".to_string(),
         }),
     }
 }
