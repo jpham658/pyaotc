@@ -153,7 +153,6 @@ pub fn create_object<'ctx>(
             .expect("new_str isn't defined"),
         _ => {
             if value.is_pointer_value() {
-                println!("here {:?}", value);
                 let ptr_val = compiler
                     .builder
                     .build_load(value.into_pointer_value(), "")

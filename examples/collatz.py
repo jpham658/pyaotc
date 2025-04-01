@@ -20,5 +20,5 @@ def collatz(n):
     
     return sequence
 
-print(collatz(3))
-print(collatz(3.0))
+print(collatz(3000))
+print(collatz(3000.0))
