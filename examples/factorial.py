@@ -20,4 +20,4 @@ def factorial(x):
     return x * factorial(x-1)
 print(factorial(3))
 print(factorial(3.0))
-print(factorial("wrong string"))
+print(factorial("wrong string!"))
