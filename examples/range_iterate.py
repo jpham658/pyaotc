@@ -1,3 +1,9 @@
+# Compiler:
+#   status: success
+#
+# Run-time:
+#   status: success
+
 def range_iterate(n):
     total = 0
     for val in range(n):
