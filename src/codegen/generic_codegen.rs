@@ -899,7 +899,7 @@ impl LLVMGenericCodegen for ExprCall {
             function = compiler
                 .module
                 .get_function(&generic_fn_name.as_str())
-                .expect("Could not find function.");
+                .expect(format!("Could not find function {generic_fn_name}.").as_str());
         }
 
         // validate function args

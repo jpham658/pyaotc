@@ -754,7 +754,6 @@ impl LLVMTypedCodegen for ExprSubscript {
         }
 
         if let Some(element_type) = types.get(&self.range()) {
-            println!("{:?}", element_type);
             let llvm_element_type =
                 get_llvm_type(compiler, &element_type).expect("Invalid element type.");
             let llvm_element_type =

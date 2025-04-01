@@ -157,3 +157,6 @@ impl Visitor for FunctionCallCollector {
             .record_call(func_name.to_string(), arg_types);
     }
 }
+
+#[cfg(test)]
+mod tests;
