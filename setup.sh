@@ -23,10 +23,10 @@ else
 fi
 
 if ! is_installed "libpolly-14-dev"; then
-    echo "libpolly-14-dev not found, installing..."
+    echo "Polly 14 not found, installing..."
     sudo apt install -y libpolly-14-dev
 else
-    echo "libpolly-14-dev is already installed."
+    echo "Polly 14 is already installed."
 fi
 
 # Set up alternatives to point to LLVM-14 and Clang-14 if needed
