@@ -1108,19 +1108,47 @@ pub fn build_typed_for_loop_body<'ctx>(
         Some(target.as_any_value_enum()),
         Some(target_obj_ptr),
     );
+
+    let mut ret_stmt_in_body = false;
     for stmt in body {
         stmt.typed_codegen(compiler, &type_db)?;
+        if !stmt.is_return_stmt() {
+            continue;
+        }
+        if ret_stmt_in_body {
+            return Err(BackendError {
+                message: "Return statement defined more than once in this scope."
+                    .to_string(),
+            });
+        }
+        ret_stmt_in_body = true;
     }
 
-    let _ = compiler.builder.build_unconditional_branch(loop_cond_block);
+    if !ret_stmt_in_body {
+        let _ = compiler.builder.build_unconditional_branch(loop_cond_block);
+    }
 
     // loop_orelse
     if orelse.len() > 0 {
         compiler.builder.position_at_end(loop_orelse_block);
+        let mut ret_stmt_in_orelse = false;
         for stmt in orelse {
             stmt.typed_codegen(compiler, &type_db)?;
+            if !stmt.is_return_stmt() {
+                continue;
+            }
+            if ret_stmt_in_orelse {
+                return Err(BackendError {
+                    message: "Return statement defined more than once in this scope."
+                        .to_string(),
+                });
+            }
+            ret_stmt_in_orelse = true;
         }
-        let _ = compiler.builder.build_unconditional_branch(loop_end_block);
+
+        if !ret_stmt_in_orelse {
+            let _ = compiler.builder.build_unconditional_branch(loop_end_block);
+        }
     }
 
     // End loop

@@ -54,7 +54,27 @@ impl LLVMTypedCodegen for Stmt {
                         .expect("Could not build void return.");
                     Ok(ret_none.as_any_value_enum())
                 }
-                Some(expr) => expr.typed_codegen(compiler, types),
+                Some(expr) => {
+                    let expr_codegen = expr.typed_codegen(compiler, types)?;
+                    let ret_expr = match expr_codegen.get_type() {
+                        AnyTypeEnum::IntType(..) => compiler
+                            .builder
+                            .build_return(Some(&expr_codegen.into_int_value())),
+                        AnyTypeEnum::FloatType(..) => compiler
+                            .builder
+                            .build_return(Some(&expr_codegen.into_float_value())),
+                        AnyTypeEnum::PointerType(..) => compiler
+                            .builder
+                            .build_return(Some(&expr_codegen.into_pointer_value())),
+                        _ => {
+                            return Err(BackendError {
+                                message: format!("Invalid return type."),
+                            })
+                        }
+                    }
+                    .expect("Could not build return statement.");
+                    Ok(ret_expr.as_any_value_enum())
+                }
             },
             Stmt::FunctionDef(funcdef) => funcdef.typed_codegen(compiler, types),
             _ => Err(BackendError {
@@ -245,7 +265,7 @@ impl LLVMTypedCodegen for StmtFunctionDef {
 
         // build function body
         for stmt in &self.body {
-            let ir = stmt.typed_codegen(compiler, types)?;
+            let _ = stmt.typed_codegen(compiler, types)?;
             if !stmt.is_return_stmt() {
                 continue;
             }
@@ -255,28 +275,6 @@ impl LLVMTypedCodegen for StmtFunctionDef {
                 });
             }
             ret_stmt_declared = true;
-            match &return_type {
-                Type::ConcreteType(ConcreteValue::Int)
-                | Type::ConcreteType(ConcreteValue::Bool) => {
-                    let _ = compiler.builder.build_return(Some(&ir.into_int_value()));
-                }
-                Type::ConcreteType(ConcreteValue::Float) => {
-                    let _ = compiler.builder.build_return(Some(&ir.into_float_value()));
-                }
-                Type::ConcreteType(ConcreteValue::None) => {
-                    continue;
-                }
-                Type::ConcreteType(ConcreteValue::Str) | Type::List(..) | Type::Range => {
-                    let _ = compiler
-                        .builder
-                        .build_return(Some(&ir.into_pointer_value()));
-                }
-                _ => {
-                    return Err(BackendError {
-                        message: format!("Invalid return type {:?}.", return_type),
-                    })
-                }
-            };
         }
 
         if !ret_stmt_declared {
@@ -510,22 +508,17 @@ impl LLVMTypedCodegen for StmtWhile {
         for stmt in &self.body {
             match stmt.typed_codegen(compiler, types) {
                 Err(e) => return Err(e),
-                Ok(ir) => {
-                    if stmt.is_return_stmt() {
-                        ret_stmt_in_while_body = true;
-                        match ir {
-                            AnyValueEnum::IntValue(i) => {
-                                let _ = compiler.builder.build_return(Some(&i));
-                            }
-                            AnyValueEnum::FloatValue(f) => {
-                                let _ = compiler.builder.build_return(Some(&f));
-                            }
-                            AnyValueEnum::PointerValue(p) => {
-                                let _ = compiler.builder.build_return(Some(&p));
-                            }
-                            _ => {}
-                        }
+                Ok(..) => {
+                    if !stmt.is_return_stmt() {
+                        continue;
                     }
+                    if ret_stmt_in_while_body {
+                        return Err(BackendError {
+                            message: "Return statement defined more than once in this scope."
+                                .to_string(),
+                        });
+                    }
+                    ret_stmt_in_while_body = true;
                 }
             }
         }
@@ -540,24 +533,17 @@ impl LLVMTypedCodegen for StmtWhile {
             for stmt in &self.orelse {
                 match stmt.typed_codegen(compiler, types) {
                     Err(e) => return Err(e),
-                    Ok(ir) => {
-                        if stmt.is_return_stmt() {
-                            ret_stmt_in_or_else = true;
-                            match ir {
-                                AnyValueEnum::IntValue(i) => {
-                                    let _ = compiler.builder.build_return(Some(&i));
-                                }
-                                AnyValueEnum::FloatValue(f) => {
-                                    let _ = compiler.builder.build_return(Some(&f));
-                                }
-                                AnyValueEnum::PointerValue(p) => {
-                                    let _ = compiler.builder.build_return(Some(&p));
-                                }
-                                _ => {
-                                    let _ = compiler.builder.build_return(None);
-                                }
-                            }
+                    Ok(..) => {
+                        if !stmt.is_return_stmt() {
+                            continue;
                         }
+                        if ret_stmt_in_or_else {
+                            return Err(BackendError {
+                                message: "Return statement defined more than once in this scope."
+                                    .to_string(),
+                            });
+                        }
+                        ret_stmt_in_or_else = true;
                     }
                 }
             }
@@ -611,22 +597,17 @@ impl LLVMTypedCodegen for StmtIf {
         for stmt in &self.body {
             match stmt.typed_codegen(compiler, types) {
                 Err(e) => return Err(e),
-                Ok(ir) => {
-                    if stmt.is_return_stmt() {
-                        ret_stmt_in_true = true;
-                        match ir {
-                            AnyValueEnum::IntValue(i) => {
-                                let _ = compiler.builder.build_return(Some(&i));
-                            }
-                            AnyValueEnum::FloatValue(f) => {
-                                let _ = compiler.builder.build_return(Some(&f));
-                            }
-                            AnyValueEnum::PointerValue(p) => {
-                                let _ = compiler.builder.build_return(Some(&p));
-                            }
-                            _ => {}
-                        }
+                Ok(..) => {
+                    if !stmt.is_return_stmt() {
+                        continue;
                     }
+                    if ret_stmt_in_true {
+                        return Err(BackendError {
+                            message: "Return statement defined more than once in this scope."
+                                .to_string(),
+                        });
+                    }
+                    ret_stmt_in_true = true;
                 }
             }
         }
@@ -641,24 +622,17 @@ impl LLVMTypedCodegen for StmtIf {
             for stmt in &self.orelse {
                 match stmt.typed_codegen(compiler, types) {
                     Err(e) => return Err(e),
-                    Ok(ir) => {
-                        if stmt.is_return_stmt() {
-                            ret_stmt_in_iffalse = true;
-                            match ir {
-                                AnyValueEnum::IntValue(i) => {
-                                    let _ = compiler.builder.build_return(Some(&i));
-                                }
-                                AnyValueEnum::FloatValue(f) => {
-                                    let _ = compiler.builder.build_return(Some(&f));
-                                }
-                                AnyValueEnum::PointerValue(p) => {
-                                    let _ = compiler.builder.build_return(Some(&p));
-                                }
-                                _ => {
-                                    let _ = compiler.builder.build_return(None);
-                                }
-                            }
+                    Ok(..) => {
+                        if !stmt.is_return_stmt() {
+                            continue;
                         }
+                        if ret_stmt_in_iffalse {
+                            return Err(BackendError {
+                                message: "Return statement defined more than once in this scope."
+                                    .to_string(),
+                            });
+                        }
+                        ret_stmt_in_iffalse = true;
                     }
                 }
             }
