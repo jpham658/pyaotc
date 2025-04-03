@@ -16,8 +16,8 @@ const BENCHMARK_FILES: &[&str; 11] = &[
 ];
 
 fn compile_python_file(filename: &str) {
-    let output = Command::new("cargo")
-        .args(&["run", filename, "--release"])
+    let output = Command::new("./pyaotc.sh")
+        .args(&[filename])
         .output()
         .expect("Failed to compile Python file");
 

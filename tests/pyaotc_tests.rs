@@ -22,8 +22,8 @@ fn main() {
             let error_msg = format!("Invalid file name {}", test_file_path);
             let binary_name = p.file_stem().and_then(|s| s.to_str()).expect(&error_msg);
 
-            let mut compiler = Command::new("cargo");
-            compiler.args(&["run", "--", test_file_path]);
+            let mut compiler = Command::new("./pyaotc.sh");
+            compiler.args(&[test_file_path]);
 
             let binary_cmd = format!("./{}", binary_name);
             let runtime = Command::new(binary_cmd);
