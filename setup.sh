@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Use this file to set up your dependencies for the project!
+# Use this script to set up your dependencies for the project!
 # This assumes you already have Cargo and Rust installed.
 
 set -e 
@@ -24,27 +24,15 @@ sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llv
 
 echo "Setting LLVM_SYS_140_PREFIX (llvm-sys requirement)"
 export LLVM_SYS_140_PREFIX=$(llvm-config --prefix)
+export PATH=$(llvm-config-14 --prefix)/bin:$PATH
+export LIBRARY_PATH=$(llvm-config-14 --prefix)/lib:$LIBRARY_PATH
+export LD_LIBRARY_PATH=$(llvm-config-14 --prefix)/lib:$LD_LIBRARY_PATH
+export C_INCLUDE_PATH=$(llvm-config-14 --prefix)/include:$C_INCLUDE_PATH
+export CPLUS_INCLUDE_PATH=$(llvm-config-14 --prefix)/include:$CPLUS_INCLUDE_PATH
 
 if ! is_installed "llvm"; then
     echo "Installing LLVM Link..."
     sudo apt install -y llvm
-fi
-
-echo "Building Pyaotc..."
-echo "Downloading Polly... (required to build llvm-sys)"
-sudo apt install -y libpolly-14-dev
-cargo build
-cargo build --release
-
-echo "Verifying LLVM 14"
-llvm-config --version
-
-# Then download clang-14 for compiler functionality 
-if ! is_installed "clang-14"; then
-    echo "Installing Clang 14..."
-    sudo apt install -y clang
-    # Set up alternatives to point to Clang 14 
-    sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-14 100
 fi
 
 echo "Setup complete!"
