@@ -27,4 +27,4 @@ else
     echo "Clang 14 already installed."
 fi
 
-echo "Setup complete!"
+echo "Build complete!"
