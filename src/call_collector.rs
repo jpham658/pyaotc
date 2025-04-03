@@ -85,7 +85,6 @@ impl Visitor for FunctionCallCollector {
                 }
             }
             Stmt::While(while_stmt) => {
-                // Visit the condition, then the body
                 self.visit_expr(*while_stmt.test.clone());
                 for body_stmt in &while_stmt.body {
                     self.visit_stmt(body_stmt.clone());
