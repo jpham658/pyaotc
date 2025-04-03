@@ -17,4 +17,8 @@ Polly and Clang have an unfortunate breaking dependency whereby installing one w
 To work around this, if you would like to use `cargo build`, preface it first with `sudo apt install libpolly-14-dev`. __This will remove Clang 14!__ Make sure to install it back before running the compiler by using `sudo apt install clang`.
 
 ## Usage
-To compile a Python file, please use `cargo run {filename}.py`. This will generate an executable file `./filename` that you can run in the terminal.
+To compile a Python file, you can use `cargo run {filename}.py` after running the `./build.sh` script or you can use `./pyaotc.sh {filename}.py`.
+
+Using `./pyaotc.sh` will check if a release version of the project binary has been built yet. If it has, it will target that binary, otherwise, it will build it. This might be a bit safer than running `cargo run {filename}.py`, as it may require running `/build.sh` more than once due to the fragility of the Polly-Clang dependency.
+
+Both will generate an executable file `./filename` that you can run in the terminal.
