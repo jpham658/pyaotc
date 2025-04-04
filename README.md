@@ -5,9 +5,11 @@
 
 `rustc` - 1.75.0
 
-LLVM 14
+LLVM 14 (`llvm`)
 
-Clang 14
+Clang (`clang`)
+
+Boehm Garbage Collector (`libgc-dev`)
 
 To automate installation of LLVM 14, a setup script `./setup.sh` is provided. This downloads LLVM 14 from [https://apt.llvm.org/](https://apt.llvm.org/) as well as the `llvm` package.
 

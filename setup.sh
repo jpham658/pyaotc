@@ -35,4 +35,9 @@ if ! is_installed "llvm"; then
     sudo apt install -y llvm
 fi
 
+if ! is_installed "libgc-dev"; then
+    echo "Installing LLVM Link..."
+    sudo apt install -y llvm
+fi
+
 echo "Setup complete!"
