@@ -16,6 +16,8 @@ if ! is_installed "llvm-14"; then
     wget https://apt.llvm.org/llvm.sh
     chmod +x llvm.sh
     sudo ./llvm.sh 14 all
+else 
+    echo "LLVM 14 already installed."
 fi
 
 # Set up alternatives to point to LLVM-14 
@@ -33,11 +35,15 @@ export CPLUS_INCLUDE_PATH=$(llvm-config-14 --prefix)/include:$CPLUS_INCLUDE_PATH
 if ! is_installed "llvm"; then
     echo "Installing LLVM Link..."
     sudo apt install -y llvm
+else 
+    echo "LLVM Link already installed."
 fi
 
 if ! is_installed "libgc-dev"; then
-    echo "Installing LLVM Link..."
-    sudo apt install -y llvm
+    echo "Installing Boehm GC..."
+    sudo apt install -y libgc-dev
+else 
+    echo "Boehm GC already installed."
 fi
 
 echo "Setup complete!"
